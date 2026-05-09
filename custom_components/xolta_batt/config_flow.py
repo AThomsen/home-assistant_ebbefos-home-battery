@@ -5,9 +5,8 @@ import logging
 from typing import Any
 import voluptuous as vol
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
-from homeassistant.config_entries import ConfigFlow, CONN_CLASS_CLOUD_POLL
+from homeassistant.config_entries import ConfigFlow
 from homeassistant.core import HomeAssistant
-from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers import aiohttp_client
 from homeassistant.exceptions import ConfigEntryAuthFailed
 
@@ -21,7 +20,6 @@ class XoltaBatteryFlowHandler(ConfigFlow, domain=DOMAIN):
     """Handle a Xolta Battery config flow."""
 
     VERSION = 1
-    CONNECTION_CLASS = CONN_CLASS_CLOUD_POLL
 
     def __init__(self):
         """Initialize config flow."""

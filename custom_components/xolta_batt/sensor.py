@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from homeassistant.components.sensor import SensorDeviceClass, SensorStateClass
 from homeassistant.exceptions import ConfigEntryAuthFailed
 import logging
@@ -174,24 +176,10 @@ class XoltaBaseSensor(CoordinatorEntity, SensorEntity):
         self, coordinator, site_id, sensor_type, icon
     ):
         super().__init__(coordinator)
-        self.coordinator = coordinator
         self._site_id = site_id
         self._sensor_type = sensor_type
+        self._attr_name = sensor_type
         self._attr_icon = icon
-
-    @property
-    def name(self) -> str:
-        return f"{self._sensor_type}"
-
-    @property
-    def should_poll(self) -> bool:
-        """No need to poll. Coordinator notifies entity of updates."""
-        return False
-
-    @property
-    def available(self):
-        """Return if entity is available."""
-        return self.coordinator.last_update_success
 
     @property
     def device_info(self):
@@ -207,19 +195,6 @@ class XoltaBaseSensor(CoordinatorEntity, SensorEntity):
             # "via_device": (DOMAIN, self.api.bridgeid),
         }
 
-    async def async_added_to_hass(self):
-        """When entity is added to hass."""
-        self.async_on_remove(
-            self.coordinator.async_add_listener(self.async_write_ha_state)
-        )
-
-    async def async_update(self):
-        """Update the entity.
-
-        Only used by the generic entity update service.
-        """
-        await self.coordinator.async_request_refresh()
-
 
 class XoltaSensor(XoltaBaseSensor):
     def __init__(
@@ -234,17 +209,12 @@ class XoltaSensor(XoltaBaseSensor):
         state_class=None,
     ):
         super().__init__(coordinator, site_id, sensor_type, icon)
-        self.coordinator = coordinator
-        self.entity_id = f"sensor.{self._site_id}_{self._sensor_type}"
+        self._attr_unique_id = f"{self._site_id}-{self._sensor_type}"
         self._attr_device_class = device_class
         self._attr_native_unit_of_measurement = units
         self._attr_state_class = state_class
         self._data_property = data_property
         _LOGGER.debug("Creating XoltaBatterySensor with id %s", self._site_id)
-
-    @property
-    def unique_id(self) -> str:
-        return f"{self._site_id}-{self._sensor_type}"
 
     @property
     def native_value(self):
@@ -270,12 +240,8 @@ class XoltaEnergySensor(XoltaBaseSensor):
 
     def __init__(self, coordinator, site_id, sensor_type, icon, data_property):
         super().__init__(coordinator, site_id, sensor_type, icon)
-        self.entity_id = f"sensor.{self._site_id}_energy_{self._sensor_type}"
+        self._attr_unique_id = f"{self._site_id}-energy-{self._sensor_type}"
         self._data_property = data_property
-
-    @property
-    def unique_id(self) -> str:
-        return f"{self._site_id}-energy-{self._sensor_type}"
 
     @property
     def native_value(self) -> float:
