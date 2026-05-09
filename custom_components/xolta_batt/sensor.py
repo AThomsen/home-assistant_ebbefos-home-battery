@@ -80,6 +80,7 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
                     "mdi:battery-charging-100",
                     # negative means charging, positive means discharging
                     "inverterActivePowerAggAvg",
+                    SensorStateClass.MEASUREMENT,
                 ),
                 XoltaSensor(
                     coordinator,
@@ -89,6 +90,7 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
                     UnitOfPower.KILO_WATT,
                     "mdi:solar-power",
                     "meterPvActivePowerAggAvg",
+                    SensorStateClass.MEASUREMENT,
                 ),
                 XoltaSensor(
                     coordinator,
@@ -98,6 +100,7 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
                     UnitOfPower.KILO_WATT,
                     "mdi:home-lightning-bolt",
                     "consumption",
+                    SensorStateClass.MEASUREMENT,
                 ),
                 XoltaSensor(
                     coordinator,
@@ -117,6 +120,7 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
                     "mdi:transmission-tower",
                     # negative means sell, positive means buy
                     "meterGridActivePowerAggAvg",
+                    SensorStateClass.MEASUREMENT,
                 ),
                 # Energy sensors:
                 XoltaEnergySensor(
@@ -219,13 +223,22 @@ class XoltaBaseSensor(CoordinatorEntity, SensorEntity):
 
 class XoltaSensor(XoltaBaseSensor):
     def __init__(
-        self, coordinator, site_id, sensor_type, device_class, units, icon, data_property
+        self,
+        coordinator,
+        site_id,
+        sensor_type,
+        device_class,
+        units,
+        icon,
+        data_property,
+        state_class=None,
     ):
         super().__init__(coordinator, site_id, sensor_type, icon)
         self.coordinator = coordinator
         self.entity_id = f"sensor.{self._site_id}_{self._sensor_type}"
         self._attr_device_class = device_class
         self._attr_native_unit_of_measurement = units
+        self._attr_state_class = state_class
         self._data_property = data_property
         _LOGGER.debug("Creating XoltaBatterySensor with id %s", self._site_id)
 
@@ -234,7 +247,7 @@ class XoltaSensor(XoltaBaseSensor):
         return f"{self._site_id}-{self._sensor_type}"
 
     @property
-    def state(self):
+    def native_value(self):
         data = self.coordinator.data["sensors"][self._site_id]
         return data[self._data_property] if data["state"] == "Running" else 0
 
