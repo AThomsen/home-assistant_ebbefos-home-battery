@@ -11,8 +11,9 @@
         "step": {
             "user": {
                 "data": {
-                    "bearer_token": "Bearer token"
+                    "refresh_token": "Refresh token"
                 },
+                "description": "Paste your refresh token. The integration will fetch fresh access tokens automatically. See the README for how to extract it from your browser.",
                 "title": "Xolta Battery"
             }
         }

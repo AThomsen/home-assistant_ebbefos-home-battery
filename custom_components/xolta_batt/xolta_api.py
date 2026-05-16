@@ -1,19 +1,70 @@
-import struct
+"""Xolta API helpers and transport implementation."""
+
 import logging
+import struct
+import time
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+from http import HTTPStatus
+from typing import TYPE_CHECKING
+
 import aiohttp
 from homeassistant import exceptions
-from homeassistant.core import HomeAssistant
+
+from .const import (
+    XOLTA_OIDC_CLIENT_ID,
+    XOLTA_OIDC_SCOPE,
+    XOLTA_OIDC_TOKEN_ENDPOINT,
+)
+
+if TYPE_CHECKING:
+    from homeassistant.core import HomeAssistant
 
 _LOGGER = logging.getLogger(__name__)
 
 _ApiBaseURL = "https://api.xapp.ebbefos.dk"
 _AppVersion = "1.2.8"
 _RequestTimeout = aiohttp.ClientTimeout(total=20)
+_AuthErrorMessage = "Bearer token expired or invalid"
+
+
+@dataclass(slots=True)
+class AuthState:
+    """Persisted authorization state for the Xolta API."""
+
+    access_token: str
+    refresh_token: str | None = None
+    token_expires_at: int | None = None
+
+
+TokenUpdateCallback = Callable[[str, str | None, int | None], Awaitable[None]]
+
+
+async def refresh_authorization_tokens(
+    webclient: aiohttp.ClientSession,
+    refresh_token: str,
+) -> dict:
+    """Refresh an access token using a refresh token."""
+    body = aiohttp.FormData()
+    body.add_field("grant_type", "refresh_token")
+    body.add_field("client_id", XOLTA_OIDC_CLIENT_ID)
+    body.add_field("refresh_token", refresh_token)
+    body.add_field("scope", XOLTA_OIDC_SCOPE)
+
+    async with webclient.post(
+        XOLTA_OIDC_TOKEN_ENDPOINT,
+        data=body,
+        headers={"accept": "application/json"},
+        timeout=_RequestTimeout,
+    ) as response:
+        response.raise_for_status()
+        return await response.json()
 
 
 # ---------------------------------------------------------------------------
 # Protobuf / gRPC-Web helpers
 # ---------------------------------------------------------------------------
+
 
 def _encode_varint(value: int) -> bytes:
     """Encode an unsigned integer as a protobuf varint."""
@@ -42,7 +93,8 @@ def _decode_varint(data: bytes, pos: int) -> tuple:
 class _ProtoReader:
     """Minimal streaming protobuf reader."""
 
-    def __init__(self, data: bytes, end: int = None):
+    def __init__(self, data: bytes, end: int | None = None) -> None:
+        """Initialize the protobuf reader."""
         self._data = data
         self._pos = 0
         self._end = end if end is not None else len(data)
@@ -63,13 +115,13 @@ class _ProtoReader:
         return self._read_varint_raw()
 
     def read_double(self) -> float:
-        val = struct.unpack_from('<d', self._data, self._pos)[0]
+        val = struct.unpack_from("<d", self._data, self._pos)[0]
         self._pos += 8
         return val
 
     def read_bytes(self) -> bytes:
         length = self._read_varint_raw()
-        data = self._data[self._pos:self._pos + length]
+        data = self._data[self._pos : self._pos + length]
         self._pos += length
         return data
 
@@ -87,7 +139,7 @@ class _ProtoReader:
 
 def _grpc_web_frame(proto_bytes: bytes) -> bytes:
     """Wrap proto bytes in a gRPC-Web data frame (no compression)."""
-    return b'\x00' + struct.pack('>I', len(proto_bytes)) + proto_bytes
+    return b"\x00" + struct.pack(">I", len(proto_bytes)) + proto_bytes
 
 
 def _grpc_web_unframe(data: bytes) -> bytes:
@@ -95,30 +147,32 @@ def _grpc_web_unframe(data: bytes) -> bytes:
     pos = 0
     while pos + 5 <= len(data):
         frame_type = data[pos]
-        length = struct.unpack('>I', data[pos + 1:pos + 5])[0]
+        length = struct.unpack(">I", data[pos + 1 : pos + 5])[0]
         pos += 5
         if frame_type == 0x00:  # data frame
-            return data[pos:pos + length]
+            return data[pos : pos + length]
         pos += length  # skip trailers (0x80) etc.
-    return b''
+    return b""
 
 
 # ---------------------------------------------------------------------------
 # Request encoders
 # ---------------------------------------------------------------------------
 
+
 def _encode_get_xites_request() -> bytes:
-    return b''  # GetXitesRequest is empty
+    return b""  # GetXitesRequest is empty
 
 
 def _encode_dashboard_request(xite_id: int) -> bytes:
     # Field 1 (xiteId), wire type 0 (varint), tag = 0x08
-    return b'\x08' + _encode_varint(xite_id)
+    return b"\x08" + _encode_varint(xite_id)
 
 
 # ---------------------------------------------------------------------------
 # Response decoders
 # ---------------------------------------------------------------------------
+
 
 def _decode_get_xites_response(data: bytes) -> list:
     """Return list of xiteIds (int) from GetXitesResponse."""
@@ -145,13 +199,13 @@ def _decode_battery_telemetry(data: bytes) -> dict:
     result = {"soc": 0.0, "kw": 0.0}
     while r.has_data:
         field, wt = r.read_tag()
-        if field == 1 and wt == 1:      # stateOfCharge (double, 0..1)
+        if field == 1 and wt == 1:  # stateOfCharge (double, 0..1)
             result["soc"] = r.read_double()
-        elif field == 2 and wt == 1:    # chargingKw → negative convention
+        elif field == 2 and wt == 1:  # chargingKw → negative convention
             result["kw"] = -r.read_double()
-        elif field == 3 and wt == 1:    # dischargingKw → positive convention
+        elif field == 3 and wt == 1:  # dischargingKw → positive convention
             result["kw"] = r.read_double()
-        elif field == 4 and wt == 2:    # idle (empty message)
+        elif field == 4 and wt == 2:  # idle (empty message)
             r.read_bytes()
         else:
             r.skip_field(wt)
@@ -163,7 +217,7 @@ def _decode_grid_telemetry(data: bytes) -> dict:
     result = {"kw": 0.0}
     while r.has_data:
         field, wt = r.read_tag()
-        if field == 1 and wt == 1:    # importingKw → positive
+        if field == 1 and wt == 1:  # importingKw → positive
             result["kw"] = r.read_double()
         elif field == 2 and wt == 1:  # exportingKw → negative
             result["kw"] = -r.read_double()
@@ -198,7 +252,7 @@ def _decode_dashboard_response(data: bytes) -> dict:
     }
     while r.has_data:
         field, wt = r.read_tag()
-        if field == 1 and wt == 2:    # battery (message)
+        if field == 1 and wt == 2:  # battery (message)
             bat = _decode_battery_telemetry(r.read_bytes())
             result["battery_kw"] = bat["kw"]
             result["battery_soc_pct"] = round(bat["soc"] * 100, 1)
@@ -228,12 +282,64 @@ class XoltaApi:
         self,
         hass: HomeAssistant,
         webclient: aiohttp.ClientSession,
-        bearer_token: str,
-    ):
+        auth_state: AuthState | None = None,
+        async_update_tokens: TokenUpdateCallback | None = None,
+    ) -> None:
+        """Initialize the API client and optional token refresh state."""
         self._hass = hass
         self._webclient = webclient
-        self._bearer_token = bearer_token
+        self._bearer_token = auth_state.access_token if auth_state else ""
+        self._refresh_token = auth_state.refresh_token if auth_state else None
+        self._token_expires_at = auth_state.token_expires_at if auth_state else None
+        self._async_update_tokens = async_update_tokens
         self._data = {"xites": None, "dashboard": {}}
+
+    async def _persist_tokens(self) -> None:
+        """Persist newly refreshed tokens if a callback was provided."""
+        if self._async_update_tokens is None:
+            return
+
+        await self._async_update_tokens(
+            self._bearer_token,
+            self._refresh_token,
+            self._token_expires_at,
+        )
+
+    async def _refresh_bearer_token(self) -> None:
+        """Refresh the access token when a refresh token is available."""
+        if not self._refresh_token:
+            raise exceptions.ConfigEntryAuthFailed(_AuthErrorMessage)
+
+        token_data = await refresh_authorization_tokens(
+            self._webclient,
+            self._refresh_token,
+        )
+
+        self._bearer_token = token_data["access_token"]
+        self._refresh_token = token_data.get("refresh_token", self._refresh_token)
+
+        expires_in = token_data.get("expires_in")
+        if expires_in is not None:
+            self._token_expires_at = int(time.time()) + int(expires_in)
+
+        await self._persist_tokens()
+
+    async def _ensure_valid_bearer_token(self) -> None:
+        """Refresh the token before it expires when possible."""
+        if self._refresh_token is None or self._token_expires_at is None:
+            return
+
+        if time.time() >= self._token_expires_at - 60:
+            await self._refresh_bearer_token()
+
+    @property
+    def auth_state(self) -> AuthState:
+        """Return the current in-memory authorization state."""
+        return AuthState(
+            access_token=self._bearer_token,
+            refresh_token=self._refresh_token,
+            token_expires_at=self._token_expires_at,
+        )
 
     def _headers(self) -> dict:
         return {
@@ -249,15 +355,24 @@ class XoltaApi:
         """POST a gRPC-Web request and return the decoded proto response bytes."""
         url = f"{_ApiBaseURL}/xeam.xapp.Xapp/{method}"
         body = _grpc_web_frame(proto_bytes)
-        async with self._webclient.post(
-            url,
-            data=body,
-            headers=self._headers(),
-            timeout=_RequestTimeout,
-        ) as response:
-            response.raise_for_status()
-            raw = await response.read()
-        return _grpc_web_unframe(raw)
+        for attempt in range(2):
+            await self._ensure_valid_bearer_token()
+
+            async with self._webclient.post(
+                url,
+                data=body,
+                headers=self._headers(),
+                timeout=_RequestTimeout,
+            ) as response:
+                if response.status == HTTPStatus.UNAUTHORIZED and attempt == 0:
+                    await self._refresh_bearer_token()
+                    continue
+
+                response.raise_for_status()
+                raw = await response.read()
+                return _grpc_web_unframe(raw)
+
+        raise exceptions.ConfigEntryAuthFailed(_AuthErrorMessage)
 
     async def test_authentication(self) -> bool:
         """Test connectivity by fetching the list of xites."""
@@ -279,19 +394,18 @@ class XoltaApi:
                 )
                 self._data["dashboard"][xite_id] = _decode_dashboard_response(proto)
                 _LOGGER.debug(
-                    "Dashboard for xite %s: %s", xite_id, self._data["dashboard"][xite_id]
+                    "Dashboard for xite %s: %s",
+                    xite_id,
+                    self._data["dashboard"][xite_id],
                 )
 
             return self._data
 
         except aiohttp.ClientResponseError as err:
-            if err.status == 401:
-                raise exceptions.ConfigEntryAuthFailed(
-                    "Bearer token expired or invalid"
-                ) from err
-            _LOGGER.error("HTTP error fetching data from Xolta API: %s", err)
+            if err.status == HTTPStatus.UNAUTHORIZED:
+                raise exceptions.ConfigEntryAuthFailed(_AuthErrorMessage) from err
+            _LOGGER.exception("HTTP error fetching data from Xolta API")
             raise
         except Exception as exception:
-            _LOGGER.error("Unable to fetch data from Xolta API: %s", exception)
+            _LOGGER.exception("Unable to fetch data from Xolta API")
             raise
-
