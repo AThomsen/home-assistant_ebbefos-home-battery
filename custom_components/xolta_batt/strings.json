@@ -5,8 +5,7 @@
         "user": {
           "description": "Set up your Xolta battery instance to allow monitoring of battery and power flows.",
           "data": {
-            "password": "[%key:common::config_flow::data::password%]",
-            "username": "[%key:common::config_flow::data::username%]"
+            "bearer_token": "Bearer token"
           }
         }
       },

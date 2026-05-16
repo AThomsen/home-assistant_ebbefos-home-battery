@@ -2,15 +2,12 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
 import voluptuous as vol
-from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.config_entries import ConfigFlow
-from homeassistant.core import HomeAssistant
 from homeassistant.helpers import aiohttp_client
 from homeassistant.exceptions import ConfigEntryAuthFailed
 
-from .const import DOMAIN, XOLTA_CONFIG_SCHEMA
+from .const import DOMAIN, XOLTA_CONFIG_SCHEMA, CONF_BEARER_TOKEN
 from .xolta_api import XoltaApi
 
 _LOGGER = logging.getLogger(__name__)
@@ -23,8 +20,7 @@ class XoltaBatteryFlowHandler(ConfigFlow, domain=DOMAIN):
 
     def __init__(self):
         """Initialize config flow."""
-        self._username = None
-        self._password = None
+        self._bearer_token = None
 
     async def _show_setup_form(self, errors=None):
         """Show the setup form to the user."""
@@ -49,8 +45,7 @@ class XoltaBatteryFlowHandler(ConfigFlow, domain=DOMAIN):
         api = XoltaApi(
             self.hass,
             aiohttp_client.async_create_clientsession(self.hass),
-            self._username,
-            self._password,
+            self._bearer_token,
         )
 
         try:
@@ -59,9 +54,9 @@ class XoltaBatteryFlowHandler(ConfigFlow, domain=DOMAIN):
                 return None
             errors["base"] = "invalid_auth"
         except ConfigEntryAuthFailed as ex:
-            errors[CONF_PASSWORD] = str(ex.args)
+            errors[CONF_BEARER_TOKEN] = str(ex.args)
         except Exception as ex:
-            errors[CONF_PASSWORD] = str(ex.args)
+            errors[CONF_BEARER_TOKEN] = str(ex.args)
         return errors
 
     async def async_step_user(self, user_input=None):
@@ -69,10 +64,9 @@ class XoltaBatteryFlowHandler(ConfigFlow, domain=DOMAIN):
         if user_input is None:
             return await self._show_setup_form(user_input)
 
-        self._username = user_input[CONF_USERNAME]
-        self._password = user_input[CONF_PASSWORD]
+        self._bearer_token = user_input[CONF_BEARER_TOKEN]
 
-        await self.async_set_unique_id(f"{self._username}")
+        await self.async_set_unique_id(DOMAIN)
         self._abort_if_unique_id_configured()
 
         errors = await self._check_setup()
@@ -83,14 +77,10 @@ class XoltaBatteryFlowHandler(ConfigFlow, domain=DOMAIN):
     async def async_step_reauth(self, user_input):
         """Handle configuration by re-auth."""
 
-        # not sure what's going on here...
         if user_input is not None:
-            self._username = user_input[CONF_USERNAME]
-            self._password = user_input[CONF_PASSWORD]
+            self._bearer_token = user_input[CONF_BEARER_TOKEN]
 
-        # self.context["title_placeholders"] = {"site_id": f"{self._site_id}"}
-
-        await self.async_set_unique_id(f"{self._username}")
+        await self.async_set_unique_id(DOMAIN)
 
         errors = await self._check_setup()
         if errors is not None:
@@ -99,19 +89,13 @@ class XoltaBatteryFlowHandler(ConfigFlow, domain=DOMAIN):
         entry = await self.async_set_unique_id(self.unique_id)
         self.hass.config_entries.async_update_entry(
             entry,
-            data={
-                CONF_USERNAME: self._username,
-                CONF_PASSWORD: self._password,
-            },
+            data={CONF_BEARER_TOKEN: self._bearer_token},
         )
         return self.async_abort(reason="reauth_successful")
 
     def _async_create_entry(self):
         """Handle create entry."""
         return self.async_create_entry(
-            title=f"{self._username}",
-            data={
-                CONF_USERNAME: self._username,
-                CONF_PASSWORD: self._password,
-            },
+            title="Xolta Battery",
+            data={CONF_BEARER_TOKEN: self._bearer_token},
         )

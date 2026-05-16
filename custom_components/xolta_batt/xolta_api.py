@@ -1,313 +1,297 @@
-import asyncio
-from datetime import timedelta, timezone, datetime as dt
-import hashlib
-import ciso8601
-import json
+import struct
 import logging
 import aiohttp
-from homeassistant.config_entries import ConfigEntry
 from homeassistant import exceptions
 from homeassistant.core import HomeAssistant
-from homeassistant.util import dt as dt_util
-from homeassistant.helpers.storage import Store
 
 _LOGGER = logging.getLogger(__name__)
 
-STORAGE_KEY_PREFIX = "xolta_batt_auth_"
-STORAGE_VERSION = 1
-STORAGE_ACCESS_TOKEN = "access_token"
-STORAGE_REFRESH_TOKEN = "refresh_token"
+_ApiBaseURL = "https://api.xapp.ebbefos.dk"
+_AppVersion = "1.2.8"
+_RequestTimeout = aiohttp.ClientTimeout(total=20)
 
-_LoginUrl = "http://70f0fc4b-xolta-batt-auth-addon:8000/login"
-_TokenURL = "https://xolta.b2clogin.com/145c2c43-a8da-46ab-b5da-1d4de444ed82/b2c_1_sisu/oauth2/v2.0/token"
-_ApiBaseURL = "https://xoltarmcluster2.northeurope.cloudapp.azure.com:19081/Xolta.Rm.Base.App/Xolta.Rm.Base.Api/api/"
-_RequestTimeout = aiohttp.ClientTimeout(total=20)  # seconds
+
+# ---------------------------------------------------------------------------
+# Protobuf / gRPC-Web helpers
+# ---------------------------------------------------------------------------
+
+def _encode_varint(value: int) -> bytes:
+    """Encode an unsigned integer as a protobuf varint."""
+    buf = []
+    while value > 0x7F:
+        buf.append((value & 0x7F) | 0x80)
+        value >>= 7
+    buf.append(value & 0x7F)
+    return bytes(buf)
+
+
+def _decode_varint(data: bytes, pos: int) -> tuple:
+    """Decode a varint from data at pos. Returns (value, new_pos)."""
+    result = 0
+    shift = 0
+    while pos < len(data):
+        b = data[pos]
+        pos += 1
+        result |= (b & 0x7F) << shift
+        if not (b & 0x80):
+            return result, pos
+        shift += 7
+    raise ValueError("Truncated varint")
+
+
+class _ProtoReader:
+    """Minimal streaming protobuf reader."""
+
+    def __init__(self, data: bytes, end: int = None):
+        self._data = data
+        self._pos = 0
+        self._end = end if end is not None else len(data)
+
+    @property
+    def has_data(self) -> bool:
+        return self._pos < self._end
+
+    def read_tag(self) -> tuple:
+        tag = self._read_varint_raw()
+        return tag >> 3, tag & 0x7
+
+    def _read_varint_raw(self) -> int:
+        val, self._pos = _decode_varint(self._data, self._pos)
+        return val
+
+    def read_varint(self) -> int:
+        return self._read_varint_raw()
+
+    def read_double(self) -> float:
+        val = struct.unpack_from('<d', self._data, self._pos)[0]
+        self._pos += 8
+        return val
+
+    def read_bytes(self) -> bytes:
+        length = self._read_varint_raw()
+        data = self._data[self._pos:self._pos + length]
+        self._pos += length
+        return data
+
+    def skip_field(self, wire_type: int) -> None:
+        if wire_type == 0:
+            self._read_varint_raw()
+        elif wire_type == 1:
+            self._pos += 8
+        elif wire_type == 2:
+            length = self._read_varint_raw()
+            self._pos += length
+        elif wire_type == 5:
+            self._pos += 4
+
+
+def _grpc_web_frame(proto_bytes: bytes) -> bytes:
+    """Wrap proto bytes in a gRPC-Web data frame (no compression)."""
+    return b'\x00' + struct.pack('>I', len(proto_bytes)) + proto_bytes
+
+
+def _grpc_web_unframe(data: bytes) -> bytes:
+    """Extract the first data frame's proto bytes from a gRPC-Web response."""
+    pos = 0
+    while pos + 5 <= len(data):
+        frame_type = data[pos]
+        length = struct.unpack('>I', data[pos + 1:pos + 5])[0]
+        pos += 5
+        if frame_type == 0x00:  # data frame
+            return data[pos:pos + length]
+        pos += length  # skip trailers (0x80) etc.
+    return b''
+
+
+# ---------------------------------------------------------------------------
+# Request encoders
+# ---------------------------------------------------------------------------
+
+def _encode_get_xites_request() -> bytes:
+    return b''  # GetXitesRequest is empty
+
+
+def _encode_dashboard_request(xite_id: int) -> bytes:
+    # Field 1 (xiteId), wire type 0 (varint), tag = 0x08
+    return b'\x08' + _encode_varint(xite_id)
+
+
+# ---------------------------------------------------------------------------
+# Response decoders
+# ---------------------------------------------------------------------------
+
+def _decode_get_xites_response(data: bytes) -> list:
+    """Return list of xiteIds (int) from GetXitesResponse."""
+    xite_ids = []
+    r = _ProtoReader(data)
+    while r.has_data:
+        field, wt = r.read_tag()
+        if field == 1 and wt == 2:  # xites (repeated Xite message)
+            xite_bytes = r.read_bytes()
+            xr = _ProtoReader(xite_bytes)
+            while xr.has_data:
+                f, w = xr.read_tag()
+                if f == 1 and w == 0:  # xiteId (int64 varint)
+                    xite_ids.append(xr.read_varint())
+                else:
+                    xr.skip_field(w)
+        else:
+            r.skip_field(wt)
+    return xite_ids
+
+
+def _decode_battery_telemetry(data: bytes) -> dict:
+    r = _ProtoReader(data)
+    result = {"soc": 0.0, "kw": 0.0}
+    while r.has_data:
+        field, wt = r.read_tag()
+        if field == 1 and wt == 1:      # stateOfCharge (double, 0..1)
+            result["soc"] = r.read_double()
+        elif field == 2 and wt == 1:    # chargingKw → negative convention
+            result["kw"] = -r.read_double()
+        elif field == 3 and wt == 1:    # dischargingKw → positive convention
+            result["kw"] = r.read_double()
+        elif field == 4 and wt == 2:    # idle (empty message)
+            r.read_bytes()
+        else:
+            r.skip_field(wt)
+    return result
+
+
+def _decode_grid_telemetry(data: bytes) -> dict:
+    r = _ProtoReader(data)
+    result = {"kw": 0.0}
+    while r.has_data:
+        field, wt = r.read_tag()
+        if field == 1 and wt == 1:    # importingKw → positive
+            result["kw"] = r.read_double()
+        elif field == 2 and wt == 1:  # exportingKw → negative
+            result["kw"] = -r.read_double()
+        else:
+            r.skip_field(wt)
+    return result
+
+
+def _decode_solar_telemetry(data: bytes) -> dict:
+    r = _ProtoReader(data)
+    result = {"kw": 0.0}
+    while r.has_data:
+        field, wt = r.read_tag()
+        if field == 1 and wt == 1:  # productionKw
+            result["kw"] = r.read_double()
+        else:
+            r.skip_field(wt)
+    return result
+
+
+def _decode_dashboard_response(data: bytes) -> dict:
+    r = _ProtoReader(data)
+    result = {
+        "battery_kw": 0.0,
+        "battery_soc_pct": 0.0,
+        "solar_kw": 0.0,
+        "grid_kw": 0.0,
+        "consumption_kw": 0.0,
+        "buy_price_kwh": 0.0,
+        "sell_price_kwh": 0.0,
+        "air_temperature": 0.0,
+    }
+    while r.has_data:
+        field, wt = r.read_tag()
+        if field == 1 and wt == 2:    # battery (message)
+            bat = _decode_battery_telemetry(r.read_bytes())
+            result["battery_kw"] = bat["kw"]
+            result["battery_soc_pct"] = round(bat["soc"] * 100, 1)
+        elif field == 2 and wt == 2:  # grid (message)
+            result["grid_kw"] = _decode_grid_telemetry(r.read_bytes())["kw"]
+        elif field == 3 and wt == 2:  # solar (message)
+            result["solar_kw"] = _decode_solar_telemetry(r.read_bytes())["kw"]
+        elif field == 4 and wt == 1:  # consumptionKw (double)
+            result["consumption_kw"] = r.read_double()
+        elif field == 5 and wt == 1:  # buyPricePerKwh
+            result["buy_price_kwh"] = r.read_double()
+        elif field == 6 and wt == 1:  # sellPricePerKwh
+            result["sell_price_kwh"] = r.read_double()
+        elif field == 7 and wt == 1:  # airTemperature
+            result["air_temperature"] = r.read_double()
+        elif field == 8 and wt == 0:  # weatherSymbol (discard)
+            r.read_varint()
+        else:
+            r.skip_field(wt)
+    return result
 
 
 class XoltaApi:
-    """Interface to the Xolta API."""
+    """Interface to the Xolta/Ebbefos gRPC-Web API."""
 
     def __init__(
         self,
         hass: HomeAssistant,
         webclient: aiohttp.ClientSession,
-        username,
-        password,
+        bearer_token: str,
     ):
         self._hass = hass
         self._webclient = webclient
+        self._bearer_token = bearer_token
+        self._data = {"xites": None, "dashboard": {}}
 
-        self._username = username
-        self._password = password
+    def _headers(self) -> dict:
+        return {
+            "authorization": f"Bearer {self._bearer_token}",
+            "content-type": "application/grpc-web+proto",
+            "x-grpc-web": "1",
+            "x-app-client": "web",
+            "x-app-version": _AppVersion,
+            "accept": "application/grpc-web+proto",
+        }
 
-        self._prefs = None
-        self._store = Store(
-            hass,
-            STORAGE_VERSION,
-            STORAGE_KEY_PREFIX + hashlib.md5(username.encode()).hexdigest(),
-        )
-
-        self._telemetry_data_ts = None
-        self._data = {"sites": None, "sensors": {}, "energy": {}}
-
-    async def login(self):
-        """Call Xolta Battery authenticator add-on to exchange username+password for access token"""
-        try:
-            if self._prefs is None:
-                await self.async_load_preferences()
-
-            login_data = {"username": self._username, "password": self._password}
-
-            async with self._webclient.post(
-                _LoginUrl, json=login_data
-            ) as login_response:
-
-                login_response.raise_for_status()
-
-                # Process response as JSON
-                json_response = await login_response.json()
-
-                if json_response["status"] == "200":
-                    self._prefs[STORAGE_ACCESS_TOKEN] = json_response["access_token"]
-                    self._prefs[STORAGE_REFRESH_TOKEN] = json_response["refresh_token"]
-                    await self._store.async_save(self._prefs)
-                    return True
-
-                if json_response["status"] == "400":
-                    # 400 is returned with unknown username / invalid password
-                    raise exceptions.ConfigEntryAuthFailed(
-                        f"Status { json_response['status'] }: { json_response['message'] }"
-                    )
-
-                # other error:
-                raise Exception(
-                    f"Error logging in. Status: { json_response['status'] }: { json_response['message'] }"
-                )
-
-        except exceptions.ConfigEntryAuthFailed:
-            raise
-
-        except Exception as ex:
-            _LOGGER.exception("Error calling Xolta authentication add-on: %s ", ex)
-            raise exceptions.ConfigEntryNotReady from ex
+    async def _grpc_post(self, method: str, proto_bytes: bytes) -> bytes:
+        """POST a gRPC-Web request and return the decoded proto response bytes."""
+        url = f"{_ApiBaseURL}/xeam.xapp.Xapp/{method}"
+        body = _grpc_web_frame(proto_bytes)
+        async with self._webclient.post(
+            url,
+            data=body,
+            headers=self._headers(),
+            timeout=_RequestTimeout,
+        ) as response:
+            response.raise_for_status()
+            raw = await response.read()
+        return _grpc_web_unframe(raw)
 
     async def test_authentication(self) -> bool:
-        """Test if we can authenticate with the host."""
+        """Test connectivity by fetching the list of xites."""
+        proto = await self._grpc_post("GetXites", _encode_get_xites_request())
+        xite_ids = _decode_get_xites_response(proto)
+        return len(xite_ids) > 0
+
+    async def get_data(self) -> dict:
+        """Fetch dashboard data for all xites."""
         try:
-            await self.refresh_tokens()
-            return True
-        except Exception as exception:
-            _LOGGER.exception("API Authentication exception: %s", exception)
-            raise
+            if self._data["xites"] is None:
+                proto = await self._grpc_post("GetXites", _encode_get_xites_request())
+                self._data["xites"] = _decode_get_xites_response(proto)
+                _LOGGER.debug("Discovered xiteIds: %s", self._data["xites"])
 
-    async def refresh_tokens(self):
-        """Get an access token for the Xolta API from a refresh token"""
-
-        if self._prefs is None:
-            await self.async_load_preferences()
-
-        try:
-            _LOGGER.debug("Xolta - Getting API access token from refresh token")
-
-            if self._prefs[STORAGE_REFRESH_TOKEN] is None:
-                _LOGGER.debug("No refresh token set. Logging in")
-                await self.login()
-                return
-
-            login_data = {
-                "grant_type": "refresh_token",
-                "refresh_token": self._prefs[STORAGE_REFRESH_TOKEN],
-            }
-
-            # Make POST request to retrieve Authentication Token from Xolta API
-            async with self._webclient.post(
-                _TokenURL, data=login_data, timeout=_RequestTimeout
-            ) as login_response:
-                _LOGGER.debug("Login Response: %s", login_response)
-
-                if login_response.status == 400:
-                    txt = await login_response.text()
-                    if "AADB2C90080" in txt:
-                        _LOGGER.info(
-                            "Could not authenticate against Xolta. Refresh token expired. Logging in using add-on"
-                        )
-                        await self.login()
-                        return
-
-                login_response.raise_for_status()
-
-                # Process response as JSON
-                json_response = await login_response.json()
-
-                self._prefs[STORAGE_ACCESS_TOKEN] = json_response["access_token"]
-                self._prefs[STORAGE_REFRESH_TOKEN] = json_response["refresh_token"]
-                await self._store.async_save(self._prefs)
-
+            for xite_id in self._data["xites"]:
+                proto = await self._grpc_post(
+                    "Dashboard", _encode_dashboard_request(xite_id)
+                )
+                self._data["dashboard"][xite_id] = _decode_dashboard_response(proto)
                 _LOGGER.debug(
-                    "Xolta - API Token received: %s", self._prefs[STORAGE_ACCESS_TOKEN]
+                    "Dashboard for xite %s: %s", xite_id, self._data["dashboard"][xite_id]
                 )
 
+            return self._data
+
+        except aiohttp.ClientResponseError as err:
+            if err.status == 401:
+                raise exceptions.ConfigEntryAuthFailed(
+                    "Bearer token expired or invalid"
+                ) from err
+            _LOGGER.error("HTTP error fetching data from Xolta API: %s", err)
+            raise
         except Exception as exception:
-            _LOGGER.error("Unable to fetch login token from Xolta API. %s", exception)
+            _LOGGER.error("Unable to fetch data from Xolta API: %s", exception)
             raise
 
-    async def get_data(self, force_renew_token=False, max_token_retries=2):
-        """Get the latest data from the Xolta API and updates the state."""
-        if self._prefs is None:
-            await self.async_load_preferences()
-
-        try:
-            for try_number in range(max_token_retries):
-
-                if self._prefs[STORAGE_ACCESS_TOKEN] is None or force_renew_token:
-                    _LOGGER.debug(
-                        "API token not set (%s) or new token requested (%s), fetching",
-                        self._prefs[STORAGE_ACCESS_TOKEN],
-                        force_renew_token,
-                    )
-                    await self.refresh_tokens()
-
-                try:
-                    headers = {
-                        "Accept": "application/json",
-                        "Cache-Control": "no-cache",
-                        "Authorization": "Bearer " + self._prefs[STORAGE_ACCESS_TOKEN],
-                    }
-
-                    if self._data["sites"] is None:
-
-                        # Read sites. These probably never changes, so only read them once.
-                        async with await self._webclient.get(
-                            _ApiBaseURL + "SiteGroup",
-                            headers=headers,
-                            timeout=_RequestTimeout,
-                        ) as response:
-
-                            response.raise_for_status()
-                            json_response = await response.json()
-                            self._data["sites"] = json_response["sites"]
-
-                    for site in self._data["sites"]:
-
-                        site_id = site["siteId"]
-
-                        async with await self._webclient.get(
-                            _ApiBaseURL + "siteStatus",
-                            headers=headers,
-                            params={"siteId": site_id},
-                            timeout=_RequestTimeout,
-                        ) as response:
-
-                            response.raise_for_status()
-                            json_response = await response.json()
-                            self._data["sensors"][site_id] = json_response["data"][0]
-                        
-
-                        # Only refresh energy data every 10 minutes
-                        now_utc = dt_util.utcnow()
-
-                        if (
-                            self._telemetry_data_ts is None or 
-                            ((now_utc - self._telemetry_data_ts).total_seconds() / 60) >= 10
-                        ):
-                            resolution_min = 10
-                            resolution_hour = resolution_min / 60
-
-                            # Query data from midnight (local tz) to now, but query in UTC
-                            now_local = dt_util.as_local(now_utc)
-                            start_of_local_day_utc = dt_util.as_utc(dt_util.start_of_local_day(now_local))
-
-                            params = {
-                                "siteId": site_id,
-                                "CalculateConsumptionNeeded": "true",
-                                "fromDateTime": f"{start_of_local_day_utc.replace(tzinfo=None).isoformat()}Z",
-                                "toDateTime": f"{now_utc.replace(tzinfo=None, microsecond=0).isoformat()}Z",
-                                "resolutionMin": resolution_min,
-                            }
-                            async with await self._webclient.get(
-                                _ApiBaseURL + "GetDataSummary",
-                                headers=headers,
-                                params=params,
-                                timeout=_RequestTimeout,
-                            ) as response:
-
-                                response.raise_for_status()
-
-                                json_response = await response.json()
-                                telemetry_data = json_response["telemetry"]
-
-                                energy_data = {
-                                    "pv": sum(
-                                        t["meterPvActivePowerAggAvgSiteSingle"]
-                                        for t in telemetry_data
-                                    )
-                                    * resolution_hour,
-                                    "consumption": sum(
-                                        t["calculatedConsumption"]
-                                        for t in telemetry_data
-                                    )
-                                    * resolution_hour,
-                                    "battery_charged": sum(
-                                        min(0, t["inverterActivePowerAggAvgSiteSum"])
-                                        for t in telemetry_data
-                                    )
-                                    * -resolution_hour,
-                                    "battery_discharged": sum(
-                                        max(0, t["inverterActivePowerAggAvgSiteSum"])
-                                        for t in telemetry_data
-                                    )
-                                    * resolution_hour,
-                                    "grid_exported": sum(
-                                        min(
-                                            0, t["meterGridActivePowerAggAvgSiteSingle"]
-                                        )
-                                        for t in telemetry_data
-                                    )
-                                    * -resolution_hour,
-                                    "grid_imported": sum(
-                                        max(
-                                            0, t["meterGridActivePowerAggAvgSiteSingle"]
-                                        )
-                                        for t in telemetry_data
-                                    )
-                                    * resolution_hour,
-                                    "dt": telemetry_data
-                                    and ciso8601.parse_datetime(
-                                        telemetry_data[-1]["utcEndTime"]
-                                    )
-                                    or None,
-                                }
-                                self._telemetry_data_ts = energy_data["dt"] or now_utc
-                                self._data["energy"][site_id] = energy_data
-
-                    return self._data
-
-                except aiohttp.ClientResponseError as err:
-                    if err.status == 401:
-                        _LOGGER.debug(
-                            "Unauthorized call to Xolta API. Renewing token (try %s of %s time(s))",
-                            try_number + 1,
-                            max_token_retries,
-                        )
-                        force_renew_token = True
-                        continue
-
-                    raise
-
-            _LOGGER.info("Xolta - Maximum token fetch tries reached, aborting for now")
-            raise OutOfRetries
-
-        except Exception as exception:
-            _LOGGER.error("Unable to fetch data from Xolta api. %s", exception)
-            raise
-
-    async def async_load_preferences(self):
-        """Load preferences with stored tokens."""
-        self._prefs = await self._store.async_load()
-
-        if self._prefs is None:
-            self._prefs = {STORAGE_ACCESS_TOKEN: None, STORAGE_REFRESH_TOKEN: None}
-
-
-class OutOfRetries(exceptions.HomeAssistantError):
-    """Error to indicate too many error attempts."""
