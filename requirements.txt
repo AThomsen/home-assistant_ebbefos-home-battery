@@ -1,0 +1,7 @@
+colorlog==6.10.1
+homeassistant==2026.5.1
+pip>=26.0.1,<26.1
+ruff==0.15.7
+
+# Debugger support (used by the debugpy integration)
+debugpy
