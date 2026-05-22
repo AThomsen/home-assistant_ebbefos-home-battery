@@ -1,15 +1,18 @@
 """Xolta API helpers and transport implementation."""
 
+import asyncio
 import logging
 import struct
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from datetime import timedelta
 from http import HTTPStatus
 from typing import TYPE_CHECKING
 
 import aiohttp
 from homeassistant import exceptions
+from homeassistant.util import dt as dt_util
 
 from .const import (
     XOLTA_OIDC_CLIENT_ID,
@@ -164,6 +167,23 @@ def _encode_get_xites_request() -> bytes:
     return b""  # GetXitesRequest is empty
 
 
+def _encode_get_xite_statistics_request(
+    xite_id: int, year: int, month: int, day: int
+) -> bytes:
+    """Encode GetXiteStatisticsRequest for a single day (period from=to=given date)."""
+    # XiteDate: field 1=year (varint), 2=month (varint), 3=day (varint)
+    date_buf = b"\x08" + _encode_varint(year)
+    date_buf += b"\x10" + _encode_varint(month)
+    date_buf += b"\x18" + _encode_varint(day)
+    # XitePeriod: field 1=from (message), 2=to (message)
+    period_buf = b"\x0a" + _encode_varint(len(date_buf)) + date_buf
+    period_buf += b"\x12" + _encode_varint(len(date_buf)) + date_buf
+    # GetXiteStatisticsRequest: field 1=xiteId (varint), 2=period (message)
+    buf = b"\x08" + _encode_varint(xite_id)
+    buf += b"\x12" + _encode_varint(len(period_buf)) + period_buf
+    return buf
+
+
 def _encode_dashboard_request(xite_id: int) -> bytes:
     # Field 1 (xiteId), wire type 0 (varint), tag = 0x08
     return b"\x08" + _encode_varint(xite_id)
@@ -172,6 +192,40 @@ def _encode_dashboard_request(xite_id: int) -> bytes:
 # ---------------------------------------------------------------------------
 # Response decoders
 # ---------------------------------------------------------------------------
+
+
+def _decode_get_xite_statistics_response(data: bytes) -> dict:
+    """Decode GetXiteStatisticsResponse into today's energy totals (kWh)."""
+    r = _ProtoReader(data)
+    result = {
+        "pv": 0.0,
+        "battery_charged": 0.0,
+        "battery_discharged": 0.0,
+        "grid_export": 0.0,
+        "grid_import": 0.0,
+        "consumption": 0.0,
+    }
+    while r.has_data:
+        field, wt = r.read_tag()
+        if wt == 1:  # wire type 1 = 64-bit (double)
+            value = r.read_double()
+            if field == 4:
+                result["pv"] = value  # solarProductionKwh
+            elif field == 5:
+                result["battery_charged"] = value  # batteryChargedKwh
+            elif field == 6:
+                result["grid_export"] = value  # gridExportKwh
+            elif field == 8:
+                result["battery_discharged"] = value  # batteryConsumptionKwh
+            elif field == 10:
+                result["consumption"] = value  # totalConsumptionKwh
+            elif field == 12:
+                result["grid_import"] = value  # gridImportKwh
+        elif wt == 2:
+            r.read_bytes()  # skip embedded messages
+        else:
+            r.skip_field(wt)
+    return result
 
 
 def _decode_get_xites_response(data: bytes) -> list:
@@ -292,7 +346,8 @@ class XoltaApi:
         self._refresh_token = auth_state.refresh_token if auth_state else None
         self._token_expires_at = auth_state.token_expires_at if auth_state else None
         self._async_update_tokens = async_update_tokens
-        self._data = {"xites": None, "dashboard": {}}
+        self._token_refresh_lock = asyncio.Lock()
+        self._data = {"xites": None, "dashboard": {}, "energy": {}}
 
     async def _persist_tokens(self) -> None:
         """Persist newly refreshed tokens if a callback was provided."""
@@ -305,24 +360,39 @@ class XoltaApi:
             self._token_expires_at,
         )
 
-    async def _refresh_bearer_token(self) -> None:
-        """Refresh the access token when a refresh token is available."""
-        if not self._refresh_token:
-            raise exceptions.ConfigEntryAuthFailed(_AuthErrorMessage)
+    async def _refresh_bearer_token(self, force: bool = False) -> None:
+        """Refresh the access token. Safe to call concurrently.
 
-        token_data = await refresh_authorization_tokens(
-            self._webclient,
-            self._refresh_token,
-        )
+        Uses a lock to prevent concurrent refreshes from racing on a rotating
+        refresh token.  When ``force`` is False (proactive refresh), a re-check
+        under the lock skips the network call if another coroutine already
+        refreshed while this one was waiting.
+        """
+        async with self._token_refresh_lock:
+            if not self._refresh_token:
+                raise exceptions.ConfigEntryAuthFailed(_AuthErrorMessage)
 
-        self._bearer_token = token_data["access_token"]
-        self._refresh_token = token_data.get("refresh_token", self._refresh_token)
+            # Re-check under lock: skip if a concurrent call already refreshed.
+            if (
+                not force
+                and self._token_expires_at
+                and time.time() < self._token_expires_at - 60
+            ):
+                return
 
-        expires_in = token_data.get("expires_in")
-        if expires_in is not None:
-            self._token_expires_at = int(time.time()) + int(expires_in)
+            token_data = await refresh_authorization_tokens(
+                self._webclient,
+                self._refresh_token,
+            )
 
-        await self._persist_tokens()
+            self._bearer_token = token_data["access_token"]
+            self._refresh_token = token_data.get("refresh_token", self._refresh_token)
+
+            expires_in = token_data.get("expires_in")
+            if expires_in is not None:
+                self._token_expires_at = int(time.time()) + int(expires_in)
+
+            await self._persist_tokens()
 
     async def _ensure_valid_bearer_token(self) -> None:
         """Refresh the token before it expires when possible."""
@@ -351,9 +421,11 @@ class XoltaApi:
             "accept": "application/grpc-web+proto",
         }
 
-    async def _grpc_post(self, method: str, proto_bytes: bytes) -> bytes:
+    async def _grpc_post(
+        self, method: str, proto_bytes: bytes, service: str = "xeam.xapp.Xapp"
+    ) -> bytes:
         """POST a gRPC-Web request and return the decoded proto response bytes."""
-        url = f"{_ApiBaseURL}/xeam.xapp.Xapp/{method}"
+        url = f"{_ApiBaseURL}/{service}/{method}"
         body = _grpc_web_frame(proto_bytes)
         for attempt in range(2):
             await self._ensure_valid_bearer_token()
@@ -365,7 +437,7 @@ class XoltaApi:
                 timeout=_RequestTimeout,
             ) as response:
                 if response.status == HTTPStatus.UNAUTHORIZED and attempt == 0:
-                    await self._refresh_bearer_token()
+                    await self._refresh_bearer_token(force=True)
                     continue
 
                 response.raise_for_status()
@@ -380,7 +452,9 @@ class XoltaApi:
         xite_ids = _decode_get_xites_response(proto)
         return len(xite_ids) > 0
 
-    async def get_data(self) -> dict:
+    async def get_data(
+        self, get_dashboard: bool = True, get_energy: bool = True
+    ) -> dict:
         """Fetch dashboard data for all xites."""
         try:
             if self._data["xites"] is None:
@@ -388,16 +462,37 @@ class XoltaApi:
                 self._data["xites"] = _decode_get_xites_response(proto)
                 _LOGGER.debug("Discovered xiteIds: %s", self._data["xites"])
 
+            # Shift back by 1 hour so that e.g. 00:45 queries yesterday,
+            # avoiding missing the last server-aggregation window of the day.
+            query_date = dt_util.now() - timedelta(hours=1)
             for xite_id in self._data["xites"]:
-                proto = await self._grpc_post(
-                    "Dashboard", _encode_dashboard_request(xite_id)
-                )
-                self._data["dashboard"][xite_id] = _decode_dashboard_response(proto)
-                _LOGGER.debug(
-                    "Dashboard for xite %s: %s",
-                    xite_id,
-                    self._data["dashboard"][xite_id],
-                )
+                if get_dashboard:
+                    proto = await self._grpc_post(
+                        "Dashboard", _encode_dashboard_request(xite_id)
+                    )
+                    self._data["dashboard"][xite_id] = _decode_dashboard_response(proto)
+                    _LOGGER.debug(
+                        "Dashboard for xite %s: %s",
+                        xite_id,
+                        self._data["dashboard"][xite_id],
+                    )
+
+                if get_energy:
+                    proto = await self._grpc_post(
+                        "GetXiteStatistics",
+                        _encode_get_xite_statistics_request(
+                            xite_id, query_date.year, query_date.month, query_date.day
+                        ),
+                        service="xeam.atlas.Atlas",
+                    )
+                    self._data["energy"][xite_id] = (
+                        _decode_get_xite_statistics_response(proto)
+                    )
+                    _LOGGER.debug(
+                        "Statistics for xite %s: %s",
+                        xite_id,
+                        self._data["energy"][xite_id],
+                    )
 
             return self._data
 
