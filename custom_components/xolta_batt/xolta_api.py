@@ -6,13 +6,11 @@ import struct
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from datetime import timedelta
 from http import HTTPStatus
 from typing import TYPE_CHECKING
 
 import aiohttp
 from homeassistant import exceptions
-from homeassistant.util import dt as dt_util
 
 from .const import (
     XOLTA_OIDC_CLIENT_ID,
@@ -163,6 +161,88 @@ def _grpc_web_unframe(data: bytes) -> bytes:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Dataclasses for GetCurrentXiteActuals / GetHistoricXiteActuals responses
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class XiteMinute:
+    """Represents a point in time (local calendar time) for an xite actual."""
+
+    year: int = 0
+    month: int = 0
+    day: int = 0
+    hour: int = 0
+    minute: int = 0
+
+
+@dataclass
+class EnergyFlow:
+    """Directional energy flows within an xite actual (kWh)."""
+
+    solar_to_battery_kwh: float = 0.0
+    solar_to_grid_kwh: float = 0.0
+    solar_to_consumption_kwh: float = 0.0
+    battery_to_grid_kwh: float = 0.0
+    battery_to_consumption_kwh: float = 0.0
+    grid_to_battery_kwh: float = 0.0
+    grid_to_consumption_kwh: float = 0.0
+
+
+@dataclass
+class MoneyFlow:
+    """Directional money flows within an xite actual (currency units)."""
+
+    solar_to_consumption_savings: float = 0.0
+    battery_to_consumption_savings: float = 0.0
+    solar_to_grid_earnings: float = 0.0
+    battery_to_grid_earnings: float = 0.0
+    grid_to_consumption_expense: float = 0.0
+    grid_to_battery_expense: float = 0.0
+
+
+@dataclass
+class XiteActual:
+    """A single data point from GetCurrentXiteActuals / GetHistoricXiteActuals."""
+
+    time: XiteMinute | None = None
+    solar_production_kwh: float = 0.0
+    battery_soc: float = 0.0
+    consumption_kwh: float = 0.0
+    grid_import_kwh: float = 0.0
+    grid_export_kwh: float = 0.0
+    without_solar_and_battery_cost: float = 0.0
+    without_battery_cost: float = 0.0
+    cost: float = 0.0
+    earnings: float = 0.0
+    savings: float = 0.0
+    total_savings: float = 0.0
+    energy_flow: EnergyFlow | None = None
+    money_flow: MoneyFlow | None = None
+
+
+@dataclass
+class GetCurrentXiteActualsResponse:
+    """Decoded response from GetCurrentXiteActuals."""
+
+    actuals: list[XiteActual]
+
+
+@dataclass
+class GetHistoricXiteActualsResponse:
+    """Decoded response from GetHistoricXiteActuals."""
+
+    actuals: list[XiteActual]
+    totals: XiteActual | None = None
+
+
+# Granularity enum values (xeam.common.Granularity from date.proto)
+GRANULARITY_UNSPECIFIED = 0
+GRANULARITY_QUARTER_HOURLY = 1
+GRANULARITY_HOURLY = 2
+
+
 def _encode_get_xites_request() -> bytes:
     return b""  # GetXitesRequest is empty
 
@@ -246,6 +326,172 @@ def _decode_get_xites_response(data: bytes) -> list:
         else:
             r.skip_field(wt)
     return xite_ids
+
+
+def _encode_get_current_xite_actuals_request(
+    xite_id: int, granularity: int = GRANULARITY_HOURLY
+) -> bytes:
+    """Encode GetCurrentXiteActualsRequest (field 1: xiteId varint, field 2: granularity varint)."""
+    buf = b"\x08" + _encode_varint(xite_id)
+    if granularity != 0:
+        buf += b"\x10" + _encode_varint(granularity)
+    return buf
+
+
+def _decode_xite_minute(data: bytes) -> XiteMinute:
+    """Decode a XiteMinute message."""
+    r = _ProtoReader(data)
+    m = XiteMinute()
+    while r.has_data:
+        field, wt = r.read_tag()
+        if wt == 0:
+            val = r.read_varint()
+            if field == 1:
+                m.year = val
+            elif field == 2:
+                m.month = val
+            elif field == 3:
+                m.day = val
+            elif field == 4:
+                m.hour = val
+            elif field == 5:
+                m.minute = val
+        else:
+            r.skip_field(wt)
+    return m
+
+
+_MONEY_FLOW_DOUBLE_FIELDS: dict[int, str] = {
+    1: "solar_to_consumption_savings",
+    2: "battery_to_consumption_savings",
+    3: "solar_to_grid_earnings",
+    4: "battery_to_grid_earnings",
+    5: "grid_to_consumption_expense",
+    6: "grid_to_battery_expense",
+}
+
+
+def _decode_money_flow(data: bytes) -> MoneyFlow:
+    """Decode a MoneyFlow message (all fields are wire-type-1 doubles)."""
+    r = _ProtoReader(data)
+    mf = MoneyFlow()
+    while r.has_data:
+        field, wt = r.read_tag()
+        if wt == 1:
+            val = r.read_double()
+            attr = _MONEY_FLOW_DOUBLE_FIELDS.get(field)
+            if attr is not None:
+                setattr(mf, attr, val)
+        else:
+            r.skip_field(wt)
+    return mf
+
+
+def _decode_energy_flow(data: bytes) -> EnergyFlow:
+    """Decode an EnergyFlow message (all fields are wire-type-1 doubles)."""
+    r = _ProtoReader(data)
+    ef = EnergyFlow()
+    while r.has_data:
+        field, wt = r.read_tag()
+        if wt == 1:
+            val = r.read_double()
+            if field == 1:
+                ef.solar_to_battery_kwh = val
+            elif field == 2:
+                ef.solar_to_grid_kwh = val
+            elif field == 3:
+                ef.solar_to_consumption_kwh = val
+            elif field == 4:
+                ef.battery_to_grid_kwh = val
+            elif field == 5:
+                ef.battery_to_consumption_kwh = val
+            elif field == 6:
+                ef.grid_to_battery_kwh = val
+            elif field == 7:
+                ef.grid_to_consumption_kwh = val
+        else:
+            r.skip_field(wt)
+    return ef
+
+
+_XITE_ACTUAL_DOUBLE_FIELDS: dict[int, str] = {
+    2: "solar_production_kwh",
+    3: "battery_soc",
+    4: "consumption_kwh",
+    5: "grid_import_kwh",
+    6: "grid_export_kwh",
+    7: "without_solar_and_battery_cost",
+    8: "without_battery_cost",
+    9: "cost",
+    10: "earnings",
+    11: "savings",
+    12: "total_savings",
+}
+
+
+def _decode_xite_actual(data: bytes) -> XiteActual:
+    """Decode a single XiteActual message."""
+    r = _ProtoReader(data)
+    a = XiteActual()
+    while r.has_data:
+        field, wt = r.read_tag()
+        if wt == 2:
+            blob = r.read_bytes()
+            if field == 1:
+                a.time = _decode_xite_minute(blob)
+            elif field == 13:  # noqa: PLR2004
+                a.energy_flow = _decode_energy_flow(blob)
+            elif field == 14:  # noqa: PLR2004
+                a.money_flow = _decode_money_flow(blob)
+        elif wt == 1:
+            val = r.read_double()
+            attr = _XITE_ACTUAL_DOUBLE_FIELDS.get(field)
+            if attr is not None:
+                setattr(a, attr, val)
+        else:
+            r.skip_field(wt)
+    return a
+
+
+def _sum_xite_actuals(actuals: list[XiteActual]) -> dict:
+    """Sum per-interval XiteActual records into daily energy totals (kWh)."""
+    result = {
+        "pv": 0.0,
+        "battery_charged": 0.0,
+        "battery_discharged": 0.0,
+        "grid_export": 0.0,
+        "grid_import": 0.0,
+        "consumption": 0.0,
+    }
+    for a in actuals:
+        result["pv"] += a.solar_production_kwh
+        result["grid_import"] += a.grid_import_kwh
+        result["grid_export"] += a.grid_export_kwh
+        result["consumption"] += a.consumption_kwh
+        if a.energy_flow is not None:
+            ef = a.energy_flow
+            result["battery_charged"] += (
+                ef.solar_to_battery_kwh + ef.grid_to_battery_kwh
+            )
+            result["battery_discharged"] += (
+                ef.battery_to_grid_kwh + ef.battery_to_consumption_kwh
+            )
+    return result
+
+
+def _decode_get_current_xite_actuals_response(
+    data: bytes,
+) -> GetCurrentXiteActualsResponse:
+    """Decode GetCurrentXiteActualsResponse → list of XiteActual dataclasses."""
+    r = _ProtoReader(data)
+    actuals: list[XiteActual] = []
+    while r.has_data:
+        field, wt = r.read_tag()
+        if field == 1 and wt == 2:
+            actuals.append(_decode_xite_actual(r.read_bytes()))
+        else:
+            r.skip_field(wt)
+    return GetCurrentXiteActualsResponse(actuals=actuals)
 
 
 def _decode_battery_telemetry(data: bytes) -> dict:
@@ -452,6 +698,23 @@ class XoltaApi:
         xite_ids = _decode_get_xites_response(proto)
         return len(xite_ids) > 0
 
+    async def get_current_xite_actuals(
+        self,
+        xite_id: int,
+        granularity: int = GRANULARITY_HOURLY,
+    ) -> GetCurrentXiteActualsResponse:
+        """Fetch current actuals for a single xite (for ad-hoc testing / inspection).
+
+        ``granularity``: GRANULARITY_UNSPECIFIED (0), GRANULARITY_QUARTER_HOURLY (1),
+        GRANULARITY_HOURLY (2).
+        """
+        proto = await self._grpc_post(
+            "GetCurrentXiteActuals",
+            _encode_get_current_xite_actuals_request(xite_id, granularity),
+            service="xeam.atlas.Atlas",
+        )
+        return _decode_get_current_xite_actuals_response(proto)
+
     async def get_data(
         self, get_dashboard: bool = True, get_energy: bool = True
     ) -> dict:
@@ -462,9 +725,6 @@ class XoltaApi:
                 self._data["xites"] = _decode_get_xites_response(proto)
                 _LOGGER.debug("Discovered xiteIds: %s", self._data["xites"])
 
-            # Shift back by 1 hour so that e.g. 00:45 queries yesterday,
-            # avoiding missing the last server-aggregation window of the day.
-            query_date = dt_util.now() - timedelta(hours=1)
             for xite_id in self._data["xites"]:
                 if get_dashboard:
                     proto = await self._grpc_post(
@@ -478,18 +738,10 @@ class XoltaApi:
                     )
 
                 if get_energy:
-                    proto = await self._grpc_post(
-                        "GetXiteStatistics",
-                        _encode_get_xite_statistics_request(
-                            xite_id, query_date.year, query_date.month, query_date.day
-                        ),
-                        service="xeam.atlas.Atlas",
-                    )
-                    self._data["energy"][xite_id] = (
-                        _decode_get_xite_statistics_response(proto)
-                    )
+                    response = await self.get_current_xite_actuals(xite_id)
+                    self._data["energy"][xite_id] = _sum_xite_actuals(response.actuals)
                     _LOGGER.debug(
-                        "Statistics for xite %s: %s",
+                        "Energy (current actuals) for xite %s: %s",
                         xite_id,
                         self._data["energy"][xite_id],
                     )
