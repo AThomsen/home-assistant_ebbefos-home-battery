@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from homeassistant.components.sensor import SensorDeviceClass, SensorStateClass
 from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.helpers.entity import DeviceInfo
 import logging
 
 from datetime import timedelta
@@ -58,12 +59,12 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
     await dashboard_coordinator.async_config_entry_first_refresh()
     await energy_coordinator.async_config_entry_first_refresh()
 
-    for xite_id in dashboard_coordinator.data["xites"]:
+    for xite in dashboard_coordinator.data["xites"].xites:
         async_add_entities(
             [
                 XoltaDashboardSensor(
                     dashboard_coordinator,
-                    xite_id,
+                    xite,
                     "Battery power flow",
                     SensorDeviceClass.POWER,
                     UnitOfPower.KILO_WATT,
@@ -73,7 +74,7 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
                 ),
                 XoltaDashboardSensor(
                     dashboard_coordinator,
-                    xite_id,
+                    xite,
                     "PV power",
                     SensorDeviceClass.POWER,
                     UnitOfPower.KILO_WATT,
@@ -83,7 +84,7 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
                 ),
                 XoltaDashboardSensor(
                     dashboard_coordinator,
-                    xite_id,
+                    xite,
                     "Power consumption",
                     SensorDeviceClass.POWER,
                     UnitOfPower.KILO_WATT,
@@ -93,7 +94,7 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
                 ),
                 XoltaDashboardSensor(
                     dashboard_coordinator,
-                    xite_id,
+                    xite,
                     "Battery charge level",
                     SensorDeviceClass.BATTERY,
                     PERCENTAGE,
@@ -103,7 +104,7 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
                 ),
                 XoltaDashboardSensor(
                     dashboard_coordinator,
-                    xite_id,
+                    xite,
                     "Grid power flow",
                     SensorDeviceClass.POWER,
                     UnitOfPower.KILO_WATT,
@@ -113,42 +114,42 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
                 ),
                 XoltaEnergySensor(
                     energy_coordinator,
-                    xite_id,
+                    xite,
                     "Grid energy imported",
                     "mdi:transmission-tower-export",
                     "grid_import",
                 ),
                 XoltaEnergySensor(
                     energy_coordinator,
-                    xite_id,
+                    xite,
                     "Grid energy exported",
                     "mdi:transmission-tower-import",
                     "grid_export",
                 ),
                 XoltaEnergySensor(
                     energy_coordinator,
-                    xite_id,
+                    xite,
                     "Battery energy charged",
                     "mdi:battery-arrow-up",
                     "battery_charged",
                 ),
                 XoltaEnergySensor(
                     energy_coordinator,
-                    xite_id,
+                    xite,
                     "Battery energy discharged",
                     "mdi:battery-arrow-down",
                     "battery_discharged",
                 ),
                 XoltaEnergySensor(
                     energy_coordinator,
-                    xite_id,
+                    xite,
                     "PV energy",
                     "mdi:solar-power",
                     "pv",
                 ),
                 XoltaEnergySensor(
                     energy_coordinator,
-                    xite_id,
+                    xite,
                     "Energy consumption",
                     "mdi:home-lightning-bolt",
                     "consumption",
@@ -157,11 +158,27 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
         )
 
 
+def _build_device_info(xite) -> DeviceInfo:
+    """Build a DeviceInfo from an Xite object (called once per sensor at setup)."""
+    battery = xite.batteries[0] if xite.batteries else None
+    name = (
+        xite.metadata.name if xite.metadata and xite.metadata.name else None
+    ) or f"Battery {xite.xite_id}"
+    area = xite.metadata.address if xite.metadata and xite.metadata.address else None
+    return DeviceInfo(
+        identifiers={(DOMAIN, xite.xite_id)},
+        name=name,
+        manufacturer="Ebbefos",
+        model=battery.brand if battery and battery.brand else "Battery",
+        suggested_area=area,
+    )
+
+
 class XoltaDashboardSensor(CoordinatorEntity, SensorEntity):
     def __init__(
         self,
         coordinator,
-        xite_id,
+        xite,
         sensor_type,
         device_class,
         units,
@@ -170,60 +187,44 @@ class XoltaDashboardSensor(CoordinatorEntity, SensorEntity):
         state_class,
     ):
         super().__init__(coordinator)
-        self._xite_id = xite_id
+        self._xite_id = xite.xite_id
         self._data_key = data_key
         self._attr_name = sensor_type
-        self._attr_unique_id = f"{xite_id}-{sensor_type}"
+        self._attr_unique_id = f"{xite.xite_id}-{sensor_type}"
         self._attr_icon = icon
         self._attr_device_class = device_class
         self._attr_native_unit_of_measurement = units
         self._attr_state_class = state_class
-
-    @property
-    def device_info(self):
-        return {
-            "identifiers": {(DOMAIN, self._xite_id)},
-            "name": f"Battery {self._xite_id}",
-            "manufacturer": "Xolta",
-            "model": "Battery",
-        }
+        self._attr_device_info = _build_device_info(xite)
 
     @property
     def native_value(self):
         dashboard = self.coordinator.data["dashboard"].get(self._xite_id)
         if dashboard is None:
             return None
-        return dashboard.get(self._data_key)
+        return getattr(dashboard, self._data_key)
 
 
 class XoltaEnergySensor(CoordinatorEntity, SensorEntity):
-    """Sensor for today's cumulative energy totals from GetXiteStatistics."""
+    """Sensor for today's cumulative energy totals from GetCurrentXiteActuals."""
 
     _attr_device_class = SensorDeviceClass.ENERGY
     _attr_state_class = SensorStateClass.TOTAL_INCREASING
     _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
     _attr_suggested_display_precision = 1
 
-    def __init__(self, coordinator, xite_id, sensor_type, icon, data_key):
+    def __init__(self, coordinator, xite, sensor_type, icon, data_key):
         super().__init__(coordinator)
-        self._xite_id = xite_id
+        self._xite_id = xite.xite_id
         self._data_key = data_key
         self._attr_name = sensor_type
-        self._attr_unique_id = f"{xite_id}-energy-{sensor_type}"
+        self._attr_unique_id = f"{xite.xite_id}-energy-{sensor_type}"
         self._attr_icon = icon
-
-    @property
-    def device_info(self):
-        return {
-            "identifiers": {(DOMAIN, self._xite_id)},
-            "name": f"Battery {self._xite_id}",
-            "manufacturer": "Xolta",
-            "model": "Battery",
-        }
+        self._attr_device_info = _build_device_info(xite)
 
     @property
     def native_value(self):
         energy = self.coordinator.data["energy"].get(self._xite_id)
         if energy is None:
             return None
-        return energy.get(self._data_key)
+        return getattr(energy, self._data_key)

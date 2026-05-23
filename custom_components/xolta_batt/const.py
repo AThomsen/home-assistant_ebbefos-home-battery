@@ -2,7 +2,7 @@ import voluptuous as vol
 
 DOMAIN = "xolta_batt"
 DASHBOARD_UPDATE_INTERVAL_SEC = 60
-ENERGY_UPDATE_INTERVAL_SEC = 10 * 60
+ENERGY_UPDATE_INTERVAL_SEC = 1 * 60
 CONF_BEARER_TOKEN = "bearer_token"
 CONF_REFRESH_TOKEN = "refresh_token"
 CONF_TOKEN_EXPIRES_AT = "token_expires_at"
