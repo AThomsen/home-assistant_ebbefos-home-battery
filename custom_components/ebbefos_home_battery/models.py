@@ -1,4 +1,4 @@
-"""Data transfer objects for the Xolta/Ebbefos API."""
+"""Data transfer objects for the Ebbefos API."""
 
 from __future__ import annotations
 

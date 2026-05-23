@@ -1,20 +1,22 @@
 from __future__ import annotations
 
-from homeassistant.components.sensor import SensorDeviceClass, SensorStateClass
+import logging
+from datetime import datetime, timedelta, timezone
+
+from homeassistant.components.sensor import (
+    SensorDeviceClass,
+    SensorEntity,
+    SensorStateClass,
+)
+from homeassistant.const import PERCENTAGE, UnitOfEnergy, UnitOfPower
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.entity import DeviceInfo, EntityCategory
-import logging
-
-from datetime import datetime, timezone, timedelta
-
 from homeassistant.helpers.update_coordinator import (
     CoordinatorEntity,
     DataUpdateCoordinator,
     UpdateFailed,
 )
-from homeassistant.components.sensor import SensorEntity
-from homeassistant.const import UnitOfEnergy, UnitOfPower
-from homeassistant.const import PERCENTAGE
+
 from .const import DOMAIN, DASHBOARD_UPDATE_INTERVAL_SEC, ENERGY_UPDATE_INTERVAL_SEC
 
 _LOGGER = logging.getLogger(__name__)
@@ -27,16 +29,15 @@ _BATTERY_STATE_NAME = {
     4: "Maintenance",
     5: "Sleep",
 }
-_CONNECTION_STATUS_NAME = {0: "Unspecified", 1: "Online", 2: "Offline"}
 
 
 async def async_setup_entry(hass, config_entry, async_add_entities):
     """Add sensors for passed config_entry in HA."""
-    xoltaApi = hass.data[DOMAIN][config_entry.entry_id]
+    ebbefosApi = hass.data[DOMAIN][config_entry.entry_id]
 
     async def async_update_dashboard():
         try:
-            return await xoltaApi.get_data(get_dashboard=True, get_energy=False)
+            return await ebbefosApi.get_data(get_dashboard=True, get_energy=False)
         except ConfigEntryAuthFailed:
             raise
         except Exception as err:
@@ -44,7 +45,7 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
 
     async def async_update_energy():
         try:
-            return await xoltaApi.get_data(get_dashboard=False, get_energy=True)
+            return await ebbefosApi.get_data(get_dashboard=False, get_energy=True)
         except ConfigEntryAuthFailed:
             raise
         except Exception as err:
@@ -53,7 +54,7 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
     dashboard_coordinator = DataUpdateCoordinator(
         hass,
         _LOGGER,
-        name="XOLTA Dashboard",
+        name="Ebbefos Dashboard",
         update_method=async_update_dashboard,
         update_interval=timedelta(seconds=DASHBOARD_UPDATE_INTERVAL_SEC),
     )
@@ -61,7 +62,7 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
     energy_coordinator = DataUpdateCoordinator(
         hass,
         _LOGGER,
-        name="XOLTA Energy",
+        name="Ebbefos Energy",
         update_method=async_update_energy,
         update_interval=timedelta(seconds=ENERGY_UPDATE_INTERVAL_SEC),
     )
@@ -72,7 +73,7 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
     for xite in dashboard_coordinator.data["xites"].xites:
         async_add_entities(
             [
-                XoltaDashboardSensor(
+                EbbefosDashboardSensor(
                     dashboard_coordinator,
                     xite,
                     "battery_power_flow",
@@ -82,7 +83,7 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
                     "battery_kw",
                     SensorStateClass.MEASUREMENT,
                 ),
-                XoltaDashboardSensor(
+                EbbefosDashboardSensor(
                     dashboard_coordinator,
                     xite,
                     "pv_power",
@@ -92,7 +93,7 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
                     "solar_kw",
                     SensorStateClass.MEASUREMENT,
                 ),
-                XoltaDashboardSensor(
+                EbbefosDashboardSensor(
                     dashboard_coordinator,
                     xite,
                     "power_consumption",
@@ -102,17 +103,17 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
                     "consumption_kw",
                     SensorStateClass.MEASUREMENT,
                 ),
-                XoltaDashboardSensor(
+                EbbefosDashboardSensor(
                     dashboard_coordinator,
                     xite,
-                    "battery_charge_level",
-                    SensorDeviceClass.BATTERY,
-                    PERCENTAGE,
+                    "battery_soc",
                     None,
+                    PERCENTAGE,
+                    "mdi:home-battery",
                     "battery_soc_pct",
                     None,
                 ),
-                XoltaDashboardSensor(
+                EbbefosDashboardSensor(
                     dashboard_coordinator,
                     xite,
                     "grid_power_flow",
@@ -122,84 +123,84 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
                     "grid_kw",
                     SensorStateClass.MEASUREMENT,
                 ),
-                XoltaEnergySensor(
+                EbbefosEnergySensor(
                     energy_coordinator,
                     xite,
                     "grid_energy_imported_today",
                     "mdi:transmission-tower-export",
                     "grid_import",
                 ),
-                XoltaEnergySensor(
+                EbbefosEnergySensor(
                     energy_coordinator,
                     xite,
                     "grid_energy_exported_today",
                     "mdi:transmission-tower-import",
                     "grid_export",
                 ),
-                XoltaEnergySensor(
+                EbbefosEnergySensor(
                     energy_coordinator,
                     xite,
                     "battery_energy_charged_today",
                     "mdi:battery-arrow-up",
                     "battery_charged",
                 ),
-                XoltaEnergySensor(
+                EbbefosEnergySensor(
                     energy_coordinator,
                     xite,
                     "battery_energy_discharged_today",
                     "mdi:battery-arrow-down",
                     "battery_discharged",
                 ),
-                XoltaEnergySensor(
+                EbbefosEnergySensor(
                     energy_coordinator,
                     xite,
                     "pv_energy_today",
                     "mdi:solar-power",
                     "pv",
                 ),
-                XoltaEnergySensor(
+                EbbefosEnergySensor(
                     energy_coordinator,
                     xite,
                     "energy_consumption_today",
                     "mdi:home-lightning-bolt",
                     "consumption",
                 ),
-                XoltaDailyCostSensor(
+                EbbefosDailyCostSensor(
                     energy_coordinator,
                     xite,
                     "cost_today",
                     "mdi:cash-minus",
                     "cost",
                 ),
-                XoltaDailyCostSensor(
+                EbbefosDailyCostSensor(
                     energy_coordinator,
                     xite,
                     "earnings_today",
                     "mdi:cash-plus",
                     "earnings",
                 ),
-                XoltaDailyCostSensor(
+                EbbefosDailyCostSensor(
                     energy_coordinator,
                     xite,
                     "savings_today",
                     "mdi:piggy-bank",
                     "savings",
                 ),
-                XoltaDailyCostSensor(
+                EbbefosDailyCostSensor(
                     energy_coordinator,
                     xite,
                     "total_savings_today",
                     "mdi:piggy-bank-outline",
                     "total_savings",
                 ),
-                XoltaDailyCostSensor(
+                EbbefosDailyCostSensor(
                     energy_coordinator,
                     xite,
                     "cost_without_solar_and_battery_today",
                     "mdi:cash-remove",
                     "without_solar_and_battery_cost",
                 ),
-                XoltaDailyCostSensor(
+                EbbefosDailyCostSensor(
                     energy_coordinator,
                     xite,
                     "cost_without_battery_today",
@@ -219,13 +220,12 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
                 bid = bs.battery.battery_id
                 bat_name = bs.battery.battery_meta.external_key
                 async_add_entities(
-                    [XoltaBatterySensor(dashboard_coordinator, xite, bid, bat_name)]
+                    [EbbefosBatterySensor(dashboard_coordinator, xite, bid, bat_name)]
                 )
 
 
 def _build_device_info(xite) -> DeviceInfo:
     """Build a DeviceInfo from an Xite object (called once per sensor at setup)."""
-    battery = xite.batteries[0] if xite.batteries else None
     name = (
         xite.metadata.name if xite.metadata and xite.metadata.name else None
     ) or f"Battery {xite.xite_id}"
@@ -233,13 +233,12 @@ def _build_device_info(xite) -> DeviceInfo:
     return DeviceInfo(
         identifiers={(DOMAIN, xite.xite_id)},
         name=name,
-        manufacturer="Ebbefos",
-        model=battery.brand if battery and battery.brand else "Battery",
+        manufacturer="Ebbefos Energy A/S",
         suggested_area=area,
     )
 
 
-class XoltaBatterySensor(CoordinatorEntity, SensorEntity):
+class EbbefosBatterySensor(CoordinatorEntity, SensorEntity):
     """One sensor per physical battery — operational status as value, details as attributes."""
 
     _attr_has_entity_name = True
@@ -314,7 +313,7 @@ class XoltaBatterySensor(CoordinatorEntity, SensorEntity):
         return attrs
 
 
-class XoltaDashboardSensor(CoordinatorEntity, SensorEntity):
+class EbbefosDashboardSensor(CoordinatorEntity, SensorEntity):
     _attr_has_entity_name = True
 
     def __init__(
@@ -347,7 +346,7 @@ class XoltaDashboardSensor(CoordinatorEntity, SensorEntity):
         return getattr(dashboard, self._data_key)
 
 
-class XoltaDailyCostSensor(CoordinatorEntity, SensorEntity):
+class EbbefosDailyCostSensor(CoordinatorEntity, SensorEntity):
     """Sensor for today's cumulative cost/savings totals from GetCurrentXiteActuals."""
 
     _attr_has_entity_name = True
@@ -372,7 +371,7 @@ class XoltaDailyCostSensor(CoordinatorEntity, SensorEntity):
         return getattr(energy, self._data_key)
 
 
-class XoltaEnergySensor(CoordinatorEntity, SensorEntity):
+class EbbefosEnergySensor(CoordinatorEntity, SensorEntity):
     """Sensor for today's cumulative energy totals from GetCurrentXiteActuals."""
 
     _attr_has_entity_name = True

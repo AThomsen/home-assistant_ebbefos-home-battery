@@ -1,4 +1,4 @@
-"""Protobuf / gRPC-Web encoding and decoding for the Xolta API."""
+"""Protobuf / gRPC-Web encoding and decoding for the Ebbefos energy platform API."""
 
 from __future__ import annotations
 

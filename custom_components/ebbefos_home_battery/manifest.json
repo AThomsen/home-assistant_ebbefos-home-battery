@@ -1,0 +1,14 @@
+{
+    "domain": "ebbefos_home_battery",
+    "name": "Ebbefos Home Battery",
+    "codeowners": [
+        "AThomsen"
+    ],
+    "config_flow": true,
+    "dependencies": [],
+    "documentation": "https://github.com/AThomsen/home-assistant_ebbefos-home-battery",
+    "iot_class": "cloud_polling",
+    "issue_tracker": "https://github.com/AThomsen/home-assistant_ebbefos-home-battery/issues",
+    "requirements": [],
+    "version": "0.1.0"
+}

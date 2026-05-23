@@ -1,4 +1,4 @@
-"""Xolta API client and authentication helpers."""
+"""Ebbefos API client and authentication helpers."""
 
 from __future__ import annotations
 
@@ -14,9 +14,9 @@ import aiohttp
 from homeassistant import exceptions
 
 from .const import (
-    XOLTA_OIDC_CLIENT_ID,
-    XOLTA_OIDC_SCOPE,
-    XOLTA_OIDC_TOKEN_ENDPOINT,
+    EBBEFOS_OIDC_CLIENT_ID,
+    EBBEFOS_OIDC_SCOPE,
+    EBBEFOS_OIDC_TOKEN_ENDPOINT,
 )
 from .models import (
     GRANULARITY_HOURLY,
@@ -51,7 +51,7 @@ _AuthErrorMessage = "Bearer token expired or invalid"
 
 @dataclass(slots=True)
 class AuthState:
-    """Persisted authorization state for the Xolta API."""
+    """Persisted authorization state for the Ebbefos API."""
 
     access_token: str
     refresh_token: str | None = None
@@ -68,12 +68,12 @@ async def refresh_authorization_tokens(
     """Refresh an access token using a refresh token."""
     body = aiohttp.FormData()
     body.add_field("grant_type", "refresh_token")
-    body.add_field("client_id", XOLTA_OIDC_CLIENT_ID)
+    body.add_field("client_id", EBBEFOS_OIDC_CLIENT_ID)
     body.add_field("refresh_token", refresh_token)
-    body.add_field("scope", XOLTA_OIDC_SCOPE)
+    body.add_field("scope", EBBEFOS_OIDC_SCOPE)
 
     async with webclient.post(
-        XOLTA_OIDC_TOKEN_ENDPOINT,
+        EBBEFOS_OIDC_TOKEN_ENDPOINT,
         data=body,
         headers={"accept": "application/json"},
         timeout=_RequestTimeout,
@@ -82,8 +82,8 @@ async def refresh_authorization_tokens(
         return await response.json()
 
 
-class XoltaApi:
-    """Interface to the Xolta/Ebbefos gRPC-Web API."""
+class EbbefosApi:
+    """Interface to the Ebbefos gRPC-Web API."""
 
     def __init__(
         self,
@@ -277,8 +277,8 @@ class XoltaApi:
         except aiohttp.ClientResponseError as err:
             if err.status == HTTPStatus.UNAUTHORIZED:
                 raise exceptions.ConfigEntryAuthFailed(_AuthErrorMessage) from err
-            _LOGGER.exception("HTTP error fetching data from Xolta API")
+            _LOGGER.exception("HTTP error fetching data from Ebbefos API")
             raise
         except Exception:
-            _LOGGER.exception("Unable to fetch data from Xolta API")
+            _LOGGER.exception("Unable to fetch data from Ebbefos API")
             raise

@@ -1,23 +1,24 @@
-"""Config flow for xolta integration."""
+"""Config flow for Ebbefos Home Battery integration."""
 
 from __future__ import annotations
 
 from homeassistant.config_entries import ConfigFlow
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers import aiohttp_client
+from regex import E
 
 from .const import (
     CONF_BEARER_TOKEN,
     CONF_REFRESH_TOKEN,
     CONF_TOKEN_EXPIRES_AT,
     DOMAIN,
-    XOLTA_CONFIG_SCHEMA,
+    EBBEFOS_CONFIG_SCHEMA,
 )
-from .xolta_api import AuthState, XoltaApi
+from .ebbefos_api import AuthState, EbbefosApi
 
 
-class XoltaBatteryFlowHandler(ConfigFlow, domain=DOMAIN):
-    """Handle a Xolta Battery config flow (refresh token required)."""
+class EbbefosBatteryFlowHandler(ConfigFlow, domain=DOMAIN):
+    """Handle a Ebbefos Home Battery config flow (refresh token required)."""
 
     VERSION = 1
 
@@ -40,7 +41,7 @@ class XoltaBatteryFlowHandler(ConfigFlow, domain=DOMAIN):
         """Show the setup form to the user."""
         return self.async_show_form(
             step_id="user",
-            data_schema=XOLTA_CONFIG_SCHEMA,
+            data_schema=EBBEFOS_CONFIG_SCHEMA,
             errors=errors or {},
         )
 
@@ -48,7 +49,7 @@ class XoltaBatteryFlowHandler(ConfigFlow, domain=DOMAIN):
         """Show the reauth form to the user."""
         return self.async_show_form(
             step_id="reauth",
-            data_schema=XOLTA_CONFIG_SCHEMA,
+            data_schema=EBBEFOS_CONFIG_SCHEMA,
             errors=errors or {},
         )
 
@@ -63,7 +64,7 @@ class XoltaBatteryFlowHandler(ConfigFlow, domain=DOMAIN):
 
         access_token = self._bearer_token or ""
 
-        api = XoltaApi(
+        api = EbbefosApi(
             self.hass,
             aiohttp_client.async_create_clientsession(self.hass),
             AuthState(
@@ -149,4 +150,6 @@ class XoltaBatteryFlowHandler(ConfigFlow, domain=DOMAIN):
 
     def _async_create_entry(self):
         """Handle create entry."""
-        return self.async_create_entry(title="Xolta Battery", data=self._entry_data())
+        return self.async_create_entry(
+            title="Ebbefos Home Battery", data=self._entry_data()
+        )

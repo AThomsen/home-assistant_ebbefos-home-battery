@@ -1,5 +1,5 @@
 {
-  "title": "Xolta Battery",
+  "title": "Ebbefos Home Battery",
   "config": {
     "step": {
       "user": {
@@ -29,8 +29,8 @@
       "power_consumption": {
         "name": "Power consumption"
       },
-      "battery_charge_level": {
-        "name": "Battery charge level"
+      "battery_soc": {
+        "name": "Battery level"
       },
       "grid_power_flow": {
         "name": "Grid power flow"
