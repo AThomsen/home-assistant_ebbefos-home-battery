@@ -13,7 +13,7 @@
                 "data": {
                     "refresh_token": "Refresh token"
                 },
-                "description": "Paste your refresh token. The integration will fetch fresh access tokens automatically. See the README for how to extract it from your browser.",
+                "description": "Paste your refresh token. The integration will fetch fresh access tokens automatically. See the README on https://github.com/AThomsen/home-assistant_ebbefos-home-battery for how to extract it from your browser.",
                 "title": "Ebbefos Home Battery"
             }
         }
