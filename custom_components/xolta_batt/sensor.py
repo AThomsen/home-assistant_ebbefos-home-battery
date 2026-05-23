@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from homeassistant.components.sensor import SensorDeviceClass, SensorStateClass
 from homeassistant.exceptions import ConfigEntryAuthFailed
-from homeassistant.helpers.entity import DeviceInfo
+from homeassistant.helpers.entity import DeviceInfo, EntityCategory
 import logging
 
 from datetime import datetime, timezone, timedelta
@@ -75,7 +75,7 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
                 XoltaDashboardSensor(
                     dashboard_coordinator,
                     xite,
-                    "Battery power flow",
+                    "battery_power_flow",
                     SensorDeviceClass.POWER,
                     UnitOfPower.KILO_WATT,
                     "mdi:battery-charging-100",
@@ -85,7 +85,7 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
                 XoltaDashboardSensor(
                     dashboard_coordinator,
                     xite,
-                    "PV power",
+                    "pv_power",
                     SensorDeviceClass.POWER,
                     UnitOfPower.KILO_WATT,
                     "mdi:solar-power",
@@ -95,7 +95,7 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
                 XoltaDashboardSensor(
                     dashboard_coordinator,
                     xite,
-                    "Power consumption",
+                    "power_consumption",
                     SensorDeviceClass.POWER,
                     UnitOfPower.KILO_WATT,
                     "mdi:home-lightning-bolt",
@@ -105,7 +105,7 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
                 XoltaDashboardSensor(
                     dashboard_coordinator,
                     xite,
-                    "Battery charge level",
+                    "battery_charge_level",
                     SensorDeviceClass.BATTERY,
                     PERCENTAGE,
                     None,
@@ -115,7 +115,7 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
                 XoltaDashboardSensor(
                     dashboard_coordinator,
                     xite,
-                    "Grid power flow",
+                    "grid_power_flow",
                     SensorDeviceClass.POWER,
                     UnitOfPower.KILO_WATT,
                     "mdi:transmission-tower",
@@ -125,84 +125,84 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
                 XoltaEnergySensor(
                     energy_coordinator,
                     xite,
-                    "Grid energy imported",
+                    "grid_energy_imported_today",
                     "mdi:transmission-tower-export",
                     "grid_import",
                 ),
                 XoltaEnergySensor(
                     energy_coordinator,
                     xite,
-                    "Grid energy exported",
+                    "grid_energy_exported_today",
                     "mdi:transmission-tower-import",
                     "grid_export",
                 ),
                 XoltaEnergySensor(
                     energy_coordinator,
                     xite,
-                    "Battery energy charged",
+                    "battery_energy_charged_today",
                     "mdi:battery-arrow-up",
                     "battery_charged",
                 ),
                 XoltaEnergySensor(
                     energy_coordinator,
                     xite,
-                    "Battery energy discharged",
+                    "battery_energy_discharged_today",
                     "mdi:battery-arrow-down",
                     "battery_discharged",
                 ),
                 XoltaEnergySensor(
                     energy_coordinator,
                     xite,
-                    "PV energy",
+                    "pv_energy_today",
                     "mdi:solar-power",
                     "pv",
                 ),
                 XoltaEnergySensor(
                     energy_coordinator,
                     xite,
-                    "Energy consumption",
+                    "energy_consumption_today",
                     "mdi:home-lightning-bolt",
                     "consumption",
                 ),
                 XoltaDailyCostSensor(
                     energy_coordinator,
                     xite,
-                    "Cost",
+                    "cost_today",
                     "mdi:cash-minus",
                     "cost",
                 ),
                 XoltaDailyCostSensor(
                     energy_coordinator,
                     xite,
-                    "Earnings",
+                    "earnings_today",
                     "mdi:cash-plus",
                     "earnings",
                 ),
                 XoltaDailyCostSensor(
                     energy_coordinator,
                     xite,
-                    "Savings",
+                    "savings_today",
                     "mdi:piggy-bank",
                     "savings",
                 ),
                 XoltaDailyCostSensor(
                     energy_coordinator,
                     xite,
-                    "Total savings",
+                    "total_savings_today",
                     "mdi:piggy-bank-outline",
                     "total_savings",
                 ),
                 XoltaDailyCostSensor(
                     energy_coordinator,
                     xite,
-                    "Cost without solar and battery",
+                    "cost_without_solar_and_battery_today",
                     "mdi:cash-remove",
                     "without_solar_and_battery_cost",
                 ),
                 XoltaDailyCostSensor(
                     energy_coordinator,
                     xite,
-                    "Cost without battery",
+                    "cost_without_battery_today",
                     "mdi:cash-remove",
                     "without_battery_cost",
                 ),
@@ -242,7 +242,10 @@ def _build_device_info(xite) -> DeviceInfo:
 class XoltaBatterySensor(CoordinatorEntity, SensorEntity):
     """One sensor per physical battery — operational status as value, details as attributes."""
 
+    _attr_has_entity_name = True
+    _attr_translation_key = "battery_status"
     _attr_device_class = SensorDeviceClass.ENUM
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
     _attr_options = [
         "Unspecified",
         "Offline",
@@ -312,11 +315,13 @@ class XoltaBatterySensor(CoordinatorEntity, SensorEntity):
 
 
 class XoltaDashboardSensor(CoordinatorEntity, SensorEntity):
+    _attr_has_entity_name = True
+
     def __init__(
         self,
         coordinator,
         xite,
-        sensor_type,
+        translation_key,
         device_class,
         units,
         icon,
@@ -326,8 +331,8 @@ class XoltaDashboardSensor(CoordinatorEntity, SensorEntity):
         super().__init__(coordinator)
         self._xite_id = xite.xite_id
         self._data_key = data_key
-        self._attr_name = sensor_type
-        self._attr_unique_id = f"{xite.xite_id}-{sensor_type}"
+        self._attr_translation_key = translation_key
+        self._attr_unique_id = f"{xite.xite_id}-{translation_key}"
         self._attr_icon = icon
         self._attr_device_class = device_class
         self._attr_native_unit_of_measurement = units
@@ -345,16 +350,17 @@ class XoltaDashboardSensor(CoordinatorEntity, SensorEntity):
 class XoltaDailyCostSensor(CoordinatorEntity, SensorEntity):
     """Sensor for today's cumulative cost/savings totals from GetCurrentXiteActuals."""
 
+    _attr_has_entity_name = True
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = "DKK"
     _attr_suggested_display_precision = 2
 
-    def __init__(self, coordinator, xite, sensor_type, icon, data_key):
+    def __init__(self, coordinator, xite, translation_key, icon, data_key):
         super().__init__(coordinator)
         self._xite_id = xite.xite_id
         self._data_key = data_key
-        self._attr_name = sensor_type
-        self._attr_unique_id = f"{xite.xite_id}-cost-{sensor_type}"
+        self._attr_translation_key = translation_key
+        self._attr_unique_id = f"{xite.xite_id}-cost-{translation_key}"
         self._attr_icon = icon
         self._attr_device_info = _build_device_info(xite)
 
@@ -369,17 +375,18 @@ class XoltaDailyCostSensor(CoordinatorEntity, SensorEntity):
 class XoltaEnergySensor(CoordinatorEntity, SensorEntity):
     """Sensor for today's cumulative energy totals from GetCurrentXiteActuals."""
 
+    _attr_has_entity_name = True
     _attr_device_class = SensorDeviceClass.ENERGY
     _attr_state_class = SensorStateClass.TOTAL_INCREASING
     _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
     _attr_suggested_display_precision = 1
 
-    def __init__(self, coordinator, xite, sensor_type, icon, data_key):
+    def __init__(self, coordinator, xite, translation_key, icon, data_key):
         super().__init__(coordinator)
         self._xite_id = xite.xite_id
         self._data_key = data_key
-        self._attr_name = sensor_type
-        self._attr_unique_id = f"{xite.xite_id}-energy-{sensor_type}"
+        self._attr_translation_key = translation_key
+        self._attr_unique_id = f"{xite.xite_id}-energy-{translation_key}"
         self._attr_icon = icon
         self._attr_device_info = _build_device_info(xite)
 

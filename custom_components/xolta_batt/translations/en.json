@@ -17,5 +17,71 @@
                 "title": "Xolta Battery"
             }
         }
+    },
+    "entity": {
+        "sensor": {
+            "battery_power_flow": {
+                "name": "Battery power flow"
+            },
+            "pv_power": {
+                "name": "PV power"
+            },
+            "power_consumption": {
+                "name": "Power consumption"
+            },
+            "battery_charge_level": {
+                "name": "Battery charge level"
+            },
+            "grid_power_flow": {
+                "name": "Grid power flow"
+            },
+            "grid_energy_imported_today": {
+                "name": "Grid energy imported today"
+            },
+            "grid_energy_exported_today": {
+                "name": "Grid energy exported today"
+            },
+            "battery_energy_charged_today": {
+                "name": "Battery energy charged today"
+            },
+            "battery_energy_discharged_today": {
+                "name": "Battery energy discharged today"
+            },
+            "pv_energy_today": {
+                "name": "PV energy today"
+            },
+            "energy_consumption_today": {
+                "name": "Energy consumption today"
+            },
+            "cost_today": {
+                "name": "Cost today"
+            },
+            "earnings_today": {
+                "name": "Earnings today"
+            },
+            "savings_today": {
+                "name": "Savings today"
+            },
+            "total_savings_today": {
+                "name": "Total savings today"
+            },
+            "cost_without_solar_and_battery_today": {
+                "name": "Cost without solar and battery today"
+            },
+            "cost_without_battery_today": {
+                "name": "Cost without battery today"
+            },
+            "battery_status": {
+                "state": {
+                    "Unspecified": "Unspecified",
+                    "Offline": "Offline",
+                    "Running": "Running",
+                    "Initializing": "Initializing",
+                    "Error": "Error",
+                    "Maintenance": "Maintenance",
+                    "Sleep": "Sleep"
+                }
+            }
+        }
     }
 }
