@@ -212,7 +212,7 @@ def _decode_solar_telemetry(data: bytes) -> float:
             kw = r.read_double()
         else:
             r.skip_field(wt)
-    return kw
+    return kw if kw > 0.01 else 0.0  # suppress sub-10W noise
 
 
 def _decode_xite_minute(data: bytes) -> XiteMinute:
