@@ -186,7 +186,7 @@ class DashboardData:
 
 @dataclass
 class EnergyTotals:
-    """Daily cumulative energy totals for a single xite (kWh)."""
+    """Daily cumulative energy and cost totals for a single xite."""
 
     pv: float = 0.0
     battery_charged: float = 0.0
@@ -194,6 +194,12 @@ class EnergyTotals:
     grid_export: float = 0.0
     grid_import: float = 0.0
     consumption: float = 0.0
+    cost: float = 0.0
+    earnings: float = 0.0
+    savings: float = 0.0
+    total_savings: float = 0.0
+    without_solar_and_battery_cost: float = 0.0
+    without_battery_cost: float = 0.0
 
 
 # ---------------------------------------------------------------------------

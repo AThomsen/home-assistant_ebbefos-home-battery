@@ -5,7 +5,7 @@ from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.entity import DeviceInfo
 import logging
 
-from datetime import timedelta
+from datetime import datetime, timezone, timedelta
 
 from homeassistant.helpers.update_coordinator import (
     CoordinatorEntity,
@@ -18,6 +18,16 @@ from homeassistant.const import PERCENTAGE
 from .const import DOMAIN, DASHBOARD_UPDATE_INTERVAL_SEC, ENERGY_UPDATE_INTERVAL_SEC
 
 _LOGGER = logging.getLogger(__name__)
+
+_BATTERY_STATE_NAME = {
+    0: "Unspecified",
+    1: "Running",
+    2: "Initializing",
+    3: "Error",
+    4: "Maintenance",
+    5: "Sleep",
+}
+_CONNECTION_STATUS_NAME = {0: "Unspecified", 1: "Online", 2: "Offline"}
 
 
 async def async_setup_entry(hass, config_entry, async_add_entities):
@@ -154,8 +164,63 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
                     "mdi:home-lightning-bolt",
                     "consumption",
                 ),
+                XoltaDailyCostSensor(
+                    energy_coordinator,
+                    xite,
+                    "Cost",
+                    "mdi:cash-minus",
+                    "cost",
+                ),
+                XoltaDailyCostSensor(
+                    energy_coordinator,
+                    xite,
+                    "Earnings",
+                    "mdi:cash-plus",
+                    "earnings",
+                ),
+                XoltaDailyCostSensor(
+                    energy_coordinator,
+                    xite,
+                    "Savings",
+                    "mdi:piggy-bank",
+                    "savings",
+                ),
+                XoltaDailyCostSensor(
+                    energy_coordinator,
+                    xite,
+                    "Total savings",
+                    "mdi:piggy-bank-outline",
+                    "total_savings",
+                ),
+                XoltaDailyCostSensor(
+                    energy_coordinator,
+                    xite,
+                    "Cost without solar and battery",
+                    "mdi:cash-remove",
+                    "without_solar_and_battery_cost",
+                ),
+                XoltaDailyCostSensor(
+                    energy_coordinator,
+                    xite,
+                    "Cost without battery",
+                    "mdi:cash-remove",
+                    "without_battery_cost",
+                ),
             ]
         )
+
+        battery_status_response = dashboard_coordinator.data["battery_status"].get(
+            xite.xite_id
+        )
+        if battery_status_response:
+            for bs in battery_status_response.batteries:
+                if bs.battery is None:
+                    continue
+                bid = bs.battery.battery_id
+                bat_name = bs.battery.battery_meta.external_key
+                async_add_entities(
+                    [XoltaBatterySensor(dashboard_coordinator, xite, bid, bat_name)]
+                )
 
 
 def _build_device_info(xite) -> DeviceInfo:
@@ -172,6 +237,78 @@ def _build_device_info(xite) -> DeviceInfo:
         model=battery.brand if battery and battery.brand else "Battery",
         suggested_area=area,
     )
+
+
+class XoltaBatterySensor(CoordinatorEntity, SensorEntity):
+    """One sensor per physical battery — operational status as value, details as attributes."""
+
+    _attr_device_class = SensorDeviceClass.ENUM
+    _attr_options = [
+        "Unspecified",
+        "Offline",
+        "Running",
+        "Initializing",
+        "Error",
+        "Maintenance",
+        "Sleep",
+    ]
+
+    def __init__(self, coordinator, xite, battery_id: int, battery_name: str) -> None:
+        super().__init__(coordinator)
+        self._xite_id = xite.xite_id
+        self._battery_id = battery_id
+        self._attr_name = battery_name
+        self._attr_unique_id = f"{xite.xite_id}-battery-{battery_id}"
+        self._attr_icon = "mdi:home-battery"
+        self._attr_device_info = _build_device_info(xite)
+
+    def _find_status(self):
+        response = self.coordinator.data["battery_status"].get(self._xite_id)
+        if response is None:
+            return None
+        return next(
+            (
+                bs
+                for bs in response.batteries
+                if bs.battery and bs.battery.battery_id == self._battery_id
+            ),
+            None,
+        )
+
+    @property
+    def native_value(self):
+        bs = self._find_status()
+        if bs is None:
+            return None
+        if bs.connection_status == 2:  # OFFLINE
+            return "Offline"
+        if bs.connection_status == 0:  # UNSPECIFIED
+            return "Unspecified"
+        return _BATTERY_STATE_NAME.get(bs.state, "Unspecified")
+
+    @property
+    def extra_state_attributes(self):
+        bs = self._find_status()
+        if bs is None:
+            return {}
+        attrs = {
+            "soc_pct": round(bs.soc * 100, 1),
+        }
+        if bs.battery:
+            if bs.battery.battery_meta:
+                attrs["model"] = bs.battery.battery_meta.product_name
+            attrs["capacity_kwh"] = bs.battery.capacity_kwh
+            attrs["usable_capacity_kwh"] = bs.battery.usable_capacity_kwh
+            attrs["inverter_max_kw"] = bs.battery.inverter_max_kw
+        if bs.latest_telemetry_timestamp is not None:
+            attrs["latest_telemetry"] = datetime.fromtimestamp(
+                bs.latest_telemetry_timestamp, tz=timezone.utc
+            ).isoformat()
+        if bs.state_timestamp is not None:
+            attrs["state_since"] = datetime.fromtimestamp(
+                bs.state_timestamp, tz=timezone.utc
+            ).isoformat()
+        return attrs
 
 
 class XoltaDashboardSensor(CoordinatorEntity, SensorEntity):
@@ -203,6 +340,30 @@ class XoltaDashboardSensor(CoordinatorEntity, SensorEntity):
         if dashboard is None:
             return None
         return getattr(dashboard, self._data_key)
+
+
+class XoltaDailyCostSensor(CoordinatorEntity, SensorEntity):
+    """Sensor for today's cumulative cost/savings totals from GetCurrentXiteActuals."""
+
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = "DKK"
+    _attr_suggested_display_precision = 2
+
+    def __init__(self, coordinator, xite, sensor_type, icon, data_key):
+        super().__init__(coordinator)
+        self._xite_id = xite.xite_id
+        self._data_key = data_key
+        self._attr_name = sensor_type
+        self._attr_unique_id = f"{xite.xite_id}-cost-{sensor_type}"
+        self._attr_icon = icon
+        self._attr_device_info = _build_device_info(xite)
+
+    @property
+    def native_value(self):
+        energy = self.coordinator.data["energy"].get(self._xite_id)
+        if energy is None:
+            return None
+        return getattr(energy, self._data_key)
 
 
 class XoltaEnergySensor(CoordinatorEntity, SensorEntity):

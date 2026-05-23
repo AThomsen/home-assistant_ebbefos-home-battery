@@ -510,6 +510,12 @@ def sum_xite_actuals(actuals: list[XiteActual]) -> EnergyTotals:
         t.grid_import += a.grid_import_kwh
         t.grid_export += a.grid_export_kwh
         t.consumption += a.consumption_kwh
+        t.cost += a.cost
+        t.earnings += a.earnings
+        t.savings += a.savings
+        t.total_savings += a.total_savings
+        t.without_solar_and_battery_cost += a.without_solar_and_battery_cost
+        t.without_battery_cost += a.without_battery_cost
         if a.energy_flow is not None:
             ef = a.energy_flow
             t.battery_charged += ef.solar_to_battery_kwh + ef.grid_to_battery_kwh

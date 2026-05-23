@@ -100,7 +100,12 @@ class XoltaApi:
         self._token_expires_at = auth_state.token_expires_at if auth_state else None
         self._async_update_tokens = async_update_tokens
         self._token_refresh_lock = asyncio.Lock()
-        self._data = {"xites": None, "dashboard": {}, "energy": {}}
+        self._data = {
+            "xites": None,
+            "dashboard": {},
+            "energy": {},
+            "battery_status": {},
+        }
 
     async def _persist_tokens(self) -> None:
         """Persist newly refreshed tokens if a callback was provided."""
@@ -249,6 +254,9 @@ class XoltaApi:
                         "Dashboard", encode_dashboard_request(xite_id)
                     )
                     self._data["dashboard"][xite_id] = decode_dashboard_response(proto)
+                    self._data["battery_status"][
+                        xite_id
+                    ] = await self.get_xite_batteries_status(xite_id)
                     _LOGGER.debug(
                         "Dashboard for xite %s: %s",
                         xite_id,
