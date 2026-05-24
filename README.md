@@ -36,6 +36,7 @@ entities:
   battery:
     entity: sensor.<replace-with-id>_battery_power_flow
     state_of_charge: sensor.<replace-with-id>_battery_level
+    display_zero_tolerance: 50
   grid:
     entity: sensor.<replace-with-id>_grid_power_flow
     name: Grid
@@ -47,12 +48,14 @@ entities:
       display_zero: true
       unit_white_space: false
       color_value: false
+    display_zero_tolerance: 50
   solar:
     entity: sensor.<replace-with-id>_pv_power
     display_zero_state: true
     name: Solar
     use_metadata: false
     color_value: true
+    display_zero_tolerance: 50
   home:
     entity: sensor.<replace-with-id>_power_consumption
 clickable_entities: true

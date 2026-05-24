@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 
 # ---------------------------------------------------------------------------
 # Granularity enum (xeam.common.Granularity from date.proto)
@@ -200,6 +201,7 @@ class EnergyTotals:
     total_savings: float = 0.0
     without_solar_and_battery_cost: float = 0.0
     without_battery_cost: float = 0.0
+    day_start: datetime | None = None  # UTC midnight of the day this data covers
 
 
 # ---------------------------------------------------------------------------

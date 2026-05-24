@@ -3,7 +3,7 @@
   "config": {
     "step": {
       "user": {
-        "description": "Paste your refresh token. The integration will fetch fresh access tokens automatically. See the README on https://github.com/AThomsen/home-assistant_ebbefos-home-battery for how to extract it from your browser.",
+        "description": "This integration uses the API that powers the Ebbefos energy app. \nTo use the api, you must log in to the Ebbefos webapp using a web browser, extract the refresh token, and paste it here. This will add all \"sites\" (installations) you user has access to, to Home Assistant. \nSee the README on https://github.com/AThomsen/home-assistant_ebbefos-home-battery for how to extract the token from your browser.",
         "data": {
           "refresh_token": "Refresh token"
         }

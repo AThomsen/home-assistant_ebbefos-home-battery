@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import struct
+from datetime import datetime, timezone
 
 from .models import (
     AddressId,
@@ -522,6 +523,10 @@ def sum_xite_actuals(actuals: list[XiteActual]) -> EnergyTotals:
             t.battery_discharged += (
                 ef.battery_to_grid_kwh + ef.battery_to_consumption_kwh
             )
+    first = next((a for a in actuals if a.time is not None), None)
+    if first is not None:
+        m = first.time
+        t.day_start = datetime(m.year, m.month, m.day, 0, 0, 0, tzinfo=timezone.utc)
     return t
 
 

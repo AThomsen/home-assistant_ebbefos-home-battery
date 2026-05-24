@@ -151,5 +151,5 @@ class EbbefosBatteryFlowHandler(ConfigFlow, domain=DOMAIN):
     def _async_create_entry(self):
         """Handle create entry."""
         return self.async_create_entry(
-            title="Ebbefos Home Battery", data=self._entry_data()
+            title="Ebbefos Energy site", data=self._entry_data()
         )

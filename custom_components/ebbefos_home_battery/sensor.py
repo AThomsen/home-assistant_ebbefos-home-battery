@@ -230,10 +230,18 @@ def _build_device_info(xite) -> DeviceInfo:
         xite.metadata.name if xite.metadata and xite.metadata.name else None
     ) or f"Battery {xite.xite_id}"
     area = xite.metadata.address if xite.metadata and xite.metadata.address else None
+
+    model = "Site with: "
+    if xite.batteries:
+        model += ", ".join(f"{b.brand} {b.name}" for b in xite.batteries)
+    else:
+        model += "No battery info"
+
     return DeviceInfo(
         identifiers={(DOMAIN, xite.xite_id)},
         name=name,
         manufacturer="Ebbefos Energy A/S",
+        model=model,
         suggested_area=area,
     )
 
@@ -346,31 +354,6 @@ class EbbefosDashboardSensor(CoordinatorEntity, SensorEntity):
         return getattr(dashboard, self._data_key)
 
 
-class EbbefosDailyCostSensor(CoordinatorEntity, SensorEntity):
-    """Sensor for today's cumulative cost/savings totals from GetCurrentXiteActuals."""
-
-    _attr_has_entity_name = True
-    _attr_state_class = SensorStateClass.MEASUREMENT
-    _attr_native_unit_of_measurement = "DKK"
-    _attr_suggested_display_precision = 2
-
-    def __init__(self, coordinator, xite, translation_key, icon, data_key):
-        super().__init__(coordinator)
-        self._xite_id = xite.xite_id
-        self._data_key = data_key
-        self._attr_translation_key = translation_key
-        self._attr_unique_id = f"{xite.xite_id}-cost-{translation_key}"
-        self._attr_icon = icon
-        self._attr_device_info = _build_device_info(xite)
-
-    @property
-    def native_value(self):
-        energy = self.coordinator.data["energy"].get(self._xite_id)
-        if energy is None:
-            return None
-        return getattr(energy, self._data_key)
-
-
 class EbbefosEnergySensor(CoordinatorEntity, SensorEntity):
     """Sensor for today's cumulative energy totals from GetCurrentXiteActuals."""
 
@@ -388,6 +371,48 @@ class EbbefosEnergySensor(CoordinatorEntity, SensorEntity):
         self._attr_unique_id = f"{xite.xite_id}-energy-{translation_key}"
         self._attr_icon = icon
         self._attr_device_info = _build_device_info(xite)
+
+    @property
+    def native_value(self):
+        energy = self.coordinator.data["energy"].get(self._xite_id)
+        if energy is None:
+            return None
+        return getattr(energy, self._data_key)
+
+
+class EbbefosDailyCostSensor(CoordinatorEntity, SensorEntity):
+    """Sensor for today's cumulative cost/savings totals from GetCurrentXiteActuals."""
+
+    _attr_has_entity_name = True
+    # We can't use TOTAL_INCREASING here since some of these (cost without solar/battery)
+    # can actually decrease during the day, but we still want the daily reset behavior.
+    # We'll use last_reset to signal start of day when value resets.
+    _attr_state_class = SensorStateClass.TOTAL
+    _attr_device_class = SensorDeviceClass.MONETARY
+    _attr_native_unit_of_measurement = "DKK"
+    _attr_suggested_display_precision = 2
+    # hide these initially since many users won't care about them
+    _attr_entity_registry_enabled_default = False
+
+    def __init__(self, coordinator, xite, translation_key, icon, data_key):
+        super().__init__(coordinator)
+        self._xite_id = xite.xite_id
+        self._data_key = data_key
+        self._attr_translation_key = translation_key
+        self._attr_unique_id = f"{xite.xite_id}-cost-{translation_key}"
+        self._attr_icon = icon
+        self._attr_device_info = _build_device_info(xite)
+
+    @property
+    def last_reset(self):
+        """Return the start of the day this data covers, derived from the API response."""
+        energy = self.coordinator.data["energy"].get(self._xite_id)
+        if energy is not None and energy.day_start is not None:
+            return energy.day_start
+        # Fallback: UTC midnight (should not normally be reached)
+        return datetime.now(timezone.utc).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
 
     @property
     def native_value(self):
