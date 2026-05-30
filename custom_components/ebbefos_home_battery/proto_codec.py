@@ -8,6 +8,8 @@ from datetime import datetime, timezone
 from .models import (
     AddressId,
     BaconBattery,
+    BatteryAction,
+    BatteryEvent,
     BatteryMeta,
     BatteryStatus,
     Battery,
@@ -19,8 +21,10 @@ from .models import (
     GetXitesResponse,
     GRANULARITY_HOURLY,
     MoneyFlow,
+    VirtualEvChargerSettings,
     Xite,
     XiteActual,
+    XiteEnergyMode,
     XiteMeta,
     XiteMinute,
 )
@@ -643,3 +647,194 @@ def decode_get_xite_batteries_status_response(
         else:
             r.skip_field(wt)
     return GetXiteBatteriesStatusResponse(batteries=batteries)
+
+
+# ---------------------------------------------------------------------------
+# GetXiteEnergyMode / SetXiteEnergyMode (xeam.emma.Emma)
+# ---------------------------------------------------------------------------
+
+
+def encode_get_xite_energy_mode_request(xite_id: int) -> bytes:
+    """Encode GetXiteEnergyModeRequest (field 1: xiteId int64 varint)."""
+    return b"\x08" + _encode_varint(xite_id)
+
+
+def _decode_virtual_ev_charger_settings(data: bytes) -> VirtualEvChargerSettings:
+    r = _ProtoReader(data)
+    s = VirtualEvChargerSettings()
+    while r.has_data:
+        field, wt = r.read_tag()
+        if field == 1 and wt == 1:  # pauseWhenConsumptionAboveKw (double)
+            s.pause_when_consumption_above_kw = r.read_double()
+        else:
+            r.skip_field(wt)
+    return s
+
+
+def _decode_double_value(data: bytes) -> float | None:
+    """Decode google.protobuf.DoubleValue (field 1: double)."""
+    r = _ProtoReader(data)
+    while r.has_data:
+        field, wt = r.read_tag()
+        if field == 1 and wt == 1:
+            return r.read_double()
+        r.skip_field(wt)
+    return None
+
+
+def _decode_battery_action(data: bytes) -> BatteryAction:
+    """Decode a BatteryAction oneof command message."""
+    r = _ProtoReader(data)
+    a = BatteryAction()
+    while r.has_data:
+        field, wt = r.read_tag()
+        if field == 1 and wt == 2:  # charge
+            a.command_type = "charge"
+            cr = _ProtoReader(r.read_bytes())
+            while cr.has_data:
+                cf, cwt = cr.read_tag()
+                if cf == 1 and cwt == 2:  # fixed
+                    a.charge_type = "fixed"
+                    fr = _ProtoReader(cr.read_bytes())
+                    while fr.has_data:
+                        ff, fwt = fr.read_tag()
+                        if ff == 1 and fwt == 1:  # effectKw
+                            a.effect_kw = fr.read_double()
+                        elif ff == 2 and fwt == 2:  # upToSoc (DoubleValue)
+                            a.up_to_soc = _decode_double_value(fr.read_bytes())
+                        else:
+                            fr.skip_field(fwt)
+                elif cf == 2 and cwt == 2:  # excessSolar (empty)
+                    cr.read_bytes()
+                    a.charge_type = "excess_solar"
+                else:
+                    cr.skip_field(cwt)
+        elif field == 2 and wt == 2:  # discharge
+            a.command_type = "discharge"
+            dr = _ProtoReader(r.read_bytes())
+            while dr.has_data:
+                df, dwt = dr.read_tag()
+                if df == 1 and dwt == 2:  # fixed
+                    a.discharge_type = "fixed"
+                    fr = _ProtoReader(dr.read_bytes())
+                    while fr.has_data:
+                        ff, fwt = fr.read_tag()
+                        if ff == 1 and fwt == 1:  # effectKw
+                            a.effect_kw = fr.read_double()
+                        elif ff == 2 and fwt == 2:  # downToSoc (DoubleValue)
+                            a.down_to_soc = _decode_double_value(fr.read_bytes())
+                        else:
+                            fr.skip_field(fwt)
+                elif df == 2 and dwt == 2:  # coverConsumption
+                    a.discharge_type = "cover_consumption"
+                    fr = _ProtoReader(dr.read_bytes())
+                    while fr.has_data:
+                        ff, fwt = fr.read_tag()
+                        if ff == 1 and fwt == 1:  # reservedSoc
+                            a.reserved_soc = fr.read_double()
+                        else:
+                            fr.skip_field(fwt)
+                else:
+                    dr.skip_field(dwt)
+        elif field == 3 and wt == 2:  # pause
+            a.command_type = "pause"
+            pr = _ProtoReader(r.read_bytes())
+            while pr.has_data:
+                pf, pwt = pr.read_tag()
+                if pf == 1 and pwt == 2:  # untilThreshold
+                    tr = _ProtoReader(pr.read_bytes())
+                    while tr.has_data:
+                        tf, twt = tr.read_tag()
+                        if tf == 1 and twt == 1:  # aboveKw
+                            a.pause_threshold_type = "above_kw"
+                            a.pause_threshold_kw = tr.read_double()
+                        elif tf == 2 and twt == 1:  # belowKw
+                            a.pause_threshold_type = "below_kw"
+                            a.pause_threshold_kw = tr.read_double()
+                        else:
+                            tr.skip_field(twt)
+                else:
+                    pr.skip_field(pwt)
+        elif field == 4 and wt == 2:  # recalibrate
+            a.command_type = "recalibrate"
+            rr = _ProtoReader(r.read_bytes())
+            while rr.has_data:
+                rf, rwt = rr.read_tag()
+                if rf == 1 and rwt == 1:  # effectKw
+                    a.effect_kw = rr.read_double()
+                else:
+                    rr.skip_field(rwt)
+        elif field == 5 and wt == 2:  # selfReliance
+            a.command_type = "self_reliance"
+            sr = _ProtoReader(r.read_bytes())
+            while sr.has_data:
+                sf, swt = sr.read_tag()
+                if sf == 1 and swt == 1:  # reservedSoc
+                    a.reserved_soc = sr.read_double()
+                elif sf == 2 and swt == 1:  # limitSoc
+                    a.limit_soc = sr.read_double()
+                else:
+                    sr.skip_field(swt)
+        elif field == 6 and wt == 2:  # remoteControl (empty)
+            r.read_bytes()
+            a.command_type = "remote_control"
+        else:
+            r.skip_field(wt)
+    return a
+
+
+def _decode_battery_event(data: bytes) -> BatteryEvent:
+    r = _ProtoReader(data)
+    e = BatteryEvent()
+    while r.has_data:
+        field, wt = r.read_tag()
+        if field == 1 and wt == 0:  # eventId (int64 varint)
+            e.event_id = r.read_varint()
+        elif field == 2 and wt == 2:  # gridServiceSession (oneof)
+            r.read_bytes()
+            e.event_type = "grid_service_session"
+        elif field == 3 and wt == 2:  # eventConfiguration (oneof)
+            r.read_bytes()
+            e.event_type = "event_configuration"
+        elif field == 4 and wt == 2:  # userCommand (oneof)
+            e.event_type = "user_command"
+            ur = _ProtoReader(r.read_bytes())
+            while ur.has_data:
+                uf, uwt = ur.read_tag()
+                if uf == 1 and uwt == 2:  # BatteryUserCommand.action
+                    e.user_command = _decode_battery_action(ur.read_bytes())
+                else:
+                    ur.skip_field(uwt)
+        elif field == 5 and wt == 2:  # triggeredCommand (oneof)
+            r.read_bytes()
+            e.event_type = "triggered_command"
+        else:
+            r.skip_field(wt)
+    return e
+
+
+def decode_get_xite_energy_mode_response(data: bytes) -> XiteEnergyMode:
+    """Decode GetXiteEnergyModeResponse into an XiteEnergyMode dataclass."""
+    r = _ProtoReader(data)
+    m = XiteEnergyMode()
+    while r.has_data:
+        field, wt = r.read_tag()
+        if field == 1 and wt == 0:  # energyMode (int32 varint)
+            m.energy_mode = r.read_varint()
+        elif field == 2 and wt == 1:  # tradeMargin (double)
+            m.trade_margin = r.read_double()
+        elif field == 4 and wt == 0:  # isAway (bool)
+            m.is_away = bool(r.read_varint())
+        elif field == 6 and wt == 0:  # hasVirtualEvCharger (bool)
+            m.has_virtual_ev_charger = bool(r.read_varint())
+        elif field == 7 and wt == 1:  # bufferPercentage (double)
+            m.buffer_percentage = r.read_double()
+        elif field == 8 and wt == 2:  # battery (BatteryEvent)
+            m.battery = _decode_battery_event(r.read_bytes())
+        elif field == 9 and wt == 2:  # virtualEvSettings (sub-message)
+            m.virtual_ev_settings = _decode_virtual_ev_charger_settings(r.read_bytes())
+        elif field == 10 and wt == 0:  # automatedEnergyTradingDisabled (bool)
+            m.automated_energy_trading_disabled = bool(r.read_varint())
+        else:
+            r.skip_field(wt)
+    return m

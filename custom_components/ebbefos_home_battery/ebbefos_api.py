@@ -23,15 +23,18 @@ from .models import (
     GetCurrentXiteActualsResponse,
     GetXiteBatteriesStatusResponse,
     GetXitesResponse,
+    XiteEnergyMode,
 )
 from .proto_codec import (
     decode_dashboard_response,
     decode_get_current_xite_actuals_response,
     decode_get_xite_batteries_status_response,
+    decode_get_xite_energy_mode_response,
     decode_get_xites_response,
     encode_dashboard_request,
     encode_get_current_xite_actuals_request,
     encode_get_xite_batteries_status_request,
+    encode_get_xite_energy_mode_request,
     encode_get_xites_request,
     grpc_web_frame,
     grpc_web_unframe,
@@ -103,6 +106,7 @@ class EbbefosApi:
         self._data = {
             "xites": None,
             "dashboard": {},
+            "energy_mode": {},
             "energy": {},
             "battery_status": {},
         }
@@ -237,6 +241,15 @@ class EbbefosApi:
         )
         return decode_get_xite_batteries_status_response(proto)
 
+    async def get_xite_energy_mode(self, xite_id: int) -> XiteEnergyMode:
+        """Fetch the current energy mode configuration for a given xite."""
+        proto = await self._grpc_post(
+            "GetXiteEnergyMode",
+            encode_get_xite_energy_mode_request(xite_id),
+            service="xeam.emma.Emma",
+        )
+        return decode_get_xite_energy_mode_response(proto)
+
     async def get_data(
         self, get_dashboard: bool = True, get_energy: bool = True
     ) -> dict:
@@ -254,9 +267,15 @@ class EbbefosApi:
                         "Dashboard", encode_dashboard_request(xite_id)
                     )
                     self._data["dashboard"][xite_id] = decode_dashboard_response(proto)
+
                     self._data["battery_status"][
                         xite_id
                     ] = await self.get_xite_batteries_status(xite_id)
+
+                    self._data["energy_mode"][
+                        xite_id
+                    ] = await self.get_xite_energy_mode(xite_id)
+
                     _LOGGER.debug(
                         "Dashboard for xite %s: %s",
                         xite_id,

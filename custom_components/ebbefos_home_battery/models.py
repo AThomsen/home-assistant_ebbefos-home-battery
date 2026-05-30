@@ -33,6 +33,15 @@ BATTERY_STATE_MAINTENANCE = 4
 BATTERY_STATE_SLEEP = 5
 
 # ---------------------------------------------------------------------------
+# EnergyMode enum (xeam.emma.EnergyMode)
+# ---------------------------------------------------------------------------
+
+ENERGY_MODE_NONE = 0
+ENERGY_MODE_MAXIMIZE_SAVINGS = 1
+ENERGY_MODE_SELF_RELIANCE = 2
+ENERGY_MODE_REMOTE_CONTROL = 3
+
+# ---------------------------------------------------------------------------
 # Sub-message types
 # ---------------------------------------------------------------------------
 
@@ -254,3 +263,61 @@ class GetXiteBatteriesStatusResponse:
     """Decoded response from GetXiteBatteriesStatus."""
 
     batteries: list[BatteryStatus]
+
+
+# ---------------------------------------------------------------------------
+# GetXiteEnergyMode / SetXiteEnergyMode response model (xeam.emma.Emma)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class VirtualEvChargerSettings:
+    """Settings for the virtual EV charger feature."""
+
+    pause_when_consumption_above_kw: float = 0.0
+
+
+@dataclass
+class BatteryAction:
+    """Decoded battery action command (from BatteryUserCommand or BatteryTriggeredCommand)."""
+
+    # Top-level oneof: "charge", "discharge", "pause", "recalibrate", "self_reliance", "remote_control"
+    command_type: str | None = None
+    # charge sub-type: "fixed", "excess_solar"
+    charge_type: str | None = None
+    # discharge sub-type: "fixed", "cover_consumption"
+    discharge_type: str | None = None
+    # effectKw: charge_fixed / discharge_fixed / recalibrate
+    effect_kw: float | None = None
+    # SoC limits (0..1)
+    up_to_soc: float | None = None  # charge_fixed
+    down_to_soc: float | None = None  # discharge_fixed
+    reserved_soc: float | None = None  # discharge_cover_consumption / self_reliance
+    limit_soc: float | None = None  # self_reliance
+    # pause threshold
+    pause_threshold_type: str | None = None  # "above_kw", "below_kw"
+    pause_threshold_kw: float | None = None
+
+
+@dataclass
+class BatteryEvent:
+    """Active battery event from GetXiteEnergyModeResponse."""
+
+    event_id: int = 0
+    # Oneof type: "grid_service_session", "event_configuration", "user_command", "triggered_command"
+    event_type: str | None = None
+    user_command: BatteryAction | None = None
+
+
+@dataclass
+class XiteEnergyMode:
+    """Current energy mode configuration for an xite (from GetXiteEnergyModeResponse)."""
+
+    energy_mode: int = ENERGY_MODE_NONE
+    trade_margin: float = 0.0
+    is_away: bool = False
+    battery: BatteryEvent | None = None
+    has_virtual_ev_charger: bool = False
+    buffer_percentage: float = 0.0
+    virtual_ev_settings: VirtualEvChargerSettings | None = None
+    automated_energy_trading_disabled: bool = False
