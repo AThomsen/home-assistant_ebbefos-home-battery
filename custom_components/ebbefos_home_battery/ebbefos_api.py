@@ -103,13 +103,7 @@ class EbbefosApi:
         self._token_expires_at = auth_state.token_expires_at if auth_state else None
         self._async_update_tokens = async_update_tokens
         self._token_refresh_lock = asyncio.Lock()
-        self._data = {
-            "xites": None,
-            "dashboard": {},
-            "energy_mode": {},
-            "energy": {},
-            "battery_status": {},
-        }
+        self._xites: GetXitesResponse | None = None
 
     async def _persist_tokens(self) -> None:
         """Persist newly refreshed tokens if a callback was provided."""
@@ -250,54 +244,66 @@ class EbbefosApi:
         )
         return decode_get_xite_energy_mode_response(proto)
 
-    async def get_data(
-        self, get_dashboard: bool = True, get_energy: bool = True
-    ) -> dict:
-        """Fetch dashboard data for all xites."""
+    async def get_xite_dashboard(self, xite_id: int):
+        """Fetch the realtime dashboard data (power flows, SoC) for a given xite."""
+        proto = await self._grpc_post("Dashboard", encode_dashboard_request(xite_id))
+        return decode_dashboard_response(proto)
+
+    async def _ensure_xites(self) -> None:
+        """Fetch and cache the list of xites if not already loaded."""
+        if self._xites is None:
+            proto = await self._grpc_post("GetXites", encode_get_xites_request())
+            self._xites = decode_get_xites_response(proto)
+            _LOGGER.debug("Discovered xites: %s", self._xites)
+
+    @property
+    def xites(self) -> GetXitesResponse | None:
+        """Return the cached list of xites, or None if not yet fetched."""
+        return self._xites
+
+    async def get_realtime_data(self) -> dict:
+        """Fetch realtime data (dashboard, battery status, energy mode) for all xites."""
         try:
-            if self._data["xites"] is None:
-                proto = await self._grpc_post("GetXites", encode_get_xites_request())
-                self._data["xites"] = decode_get_xites_response(proto)
-                _LOGGER.debug("Discovered xites: %s", self._data["xites"])
-
-            for xite in self._data["xites"].xites:
+            await self._ensure_xites()
+            dashboard, battery_status, energy_mode = {}, {}, {}
+            for xite in self._xites.xites:
                 xite_id = xite.xite_id
-                if get_dashboard:
-                    proto = await self._grpc_post(
-                        "Dashboard", encode_dashboard_request(xite_id)
-                    )
-                    self._data["dashboard"][xite_id] = decode_dashboard_response(proto)
-
-                    self._data["battery_status"][
-                        xite_id
-                    ] = await self.get_xite_batteries_status(xite_id)
-
-                    self._data["energy_mode"][
-                        xite_id
-                    ] = await self.get_xite_energy_mode(xite_id)
-
-                    _LOGGER.debug(
-                        "Dashboard for xite %s: %s",
-                        xite_id,
-                        self._data["dashboard"][xite_id],
-                    )
-
-                if get_energy:
-                    response = await self.get_current_xite_actuals(xite_id)
-                    self._data["energy"][xite_id] = sum_xite_actuals(response.actuals)
-                    _LOGGER.debug(
-                        "Energy (current actuals) for xite %s: %s",
-                        xite_id,
-                        self._data["energy"][xite_id],
-                    )
-
-            return self._data
-
+                dashboard[xite_id] = await self.get_xite_dashboard(xite_id)
+                battery_status[xite_id] = await self.get_xite_batteries_status(xite_id)
+                energy_mode[xite_id] = await self.get_xite_energy_mode(xite_id)
+                _LOGGER.debug(
+                    "Realtime data for xite %s: %s", xite_id, dashboard[xite_id]
+                )
+            return {
+                "dashboard": dashboard,
+                "battery_status": battery_status,
+                "energy_mode": energy_mode,
+            }
         except aiohttp.ClientResponseError as err:
             if err.status == HTTPStatus.UNAUTHORIZED:
                 raise exceptions.ConfigEntryAuthFailed(_AuthErrorMessage) from err
-            _LOGGER.exception("HTTP error fetching data from Ebbefos API")
+            _LOGGER.exception("HTTP error fetching realtime data from Ebbefos API")
             raise
         except Exception:
-            _LOGGER.exception("Unable to fetch data from Ebbefos API")
+            _LOGGER.exception("Unable to fetch realtime data from Ebbefos API")
+            raise
+
+    async def get_energy_totals(self) -> dict:
+        """Fetch today's cumulative energy totals for all xites."""
+        try:
+            await self._ensure_xites()
+            energy = {}
+            for xite in self._xites.xites:
+                xite_id = xite.xite_id
+                response = await self.get_current_xite_actuals(xite_id)
+                energy[xite_id] = sum_xite_actuals(response.actuals)
+                _LOGGER.debug("Energy totals for xite %s: %s", xite_id, energy[xite_id])
+            return {"energy": energy}
+        except aiohttp.ClientResponseError as err:
+            if err.status == HTTPStatus.UNAUTHORIZED:
+                raise exceptions.ConfigEntryAuthFailed(_AuthErrorMessage) from err
+            _LOGGER.exception("HTTP error fetching energy totals from Ebbefos API")
+            raise
+        except Exception:
+            _LOGGER.exception("Unable to fetch energy totals from Ebbefos API")
             raise

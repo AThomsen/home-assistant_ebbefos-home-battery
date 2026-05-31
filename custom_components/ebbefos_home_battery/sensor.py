@@ -70,9 +70,9 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
     """Add sensors for passed config_entry in HA."""
     ebbefosApi = hass.data[DOMAIN][config_entry.entry_id]
 
-    async def async_update_dashboard():
+    async def async_update_realtime():
         try:
-            return await ebbefosApi.get_data(get_dashboard=True, get_energy=False)
+            return await ebbefosApi.get_realtime_data()
         except ConfigEntryAuthFailed:
             raise
         except Exception as err:
@@ -80,17 +80,17 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
 
     async def async_update_energy():
         try:
-            return await ebbefosApi.get_data(get_dashboard=False, get_energy=True)
+            return await ebbefosApi.get_energy_totals()
         except ConfigEntryAuthFailed:
             raise
         except Exception as err:
             raise UpdateFailed(f"Error communicating with API: {err}")
 
-    dashboard_coordinator = DataUpdateCoordinator(
+    realtime_coordinator = DataUpdateCoordinator(
         hass,
         _LOGGER,
-        name="Ebbefos Dashboard",
-        update_method=async_update_dashboard,
+        name="Ebbefos Realtime",
+        update_method=async_update_realtime,
         update_interval=timedelta(seconds=DASHBOARD_UPDATE_INTERVAL_SEC),
     )
 
@@ -102,14 +102,14 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
         update_interval=timedelta(seconds=ENERGY_UPDATE_INTERVAL_SEC),
     )
 
-    await dashboard_coordinator.async_config_entry_first_refresh()
+    await realtime_coordinator.async_config_entry_first_refresh()
     await energy_coordinator.async_config_entry_first_refresh()
 
-    for xite in dashboard_coordinator.data["xites"].xites:
+    for xite in ebbefosApi.xites.xites:
         async_add_entities(
             [
                 EbbefosDashboardSensor(
-                    dashboard_coordinator,
+                    realtime_coordinator,
                     xite,
                     "battery_power_flow",
                     SensorDeviceClass.POWER,
@@ -119,7 +119,7 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
                     SensorStateClass.MEASUREMENT,
                 ),
                 EbbefosDashboardSensor(
-                    dashboard_coordinator,
+                    realtime_coordinator,
                     xite,
                     "pv_power",
                     SensorDeviceClass.POWER,
@@ -129,7 +129,7 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
                     SensorStateClass.MEASUREMENT,
                 ),
                 EbbefosDashboardSensor(
-                    dashboard_coordinator,
+                    realtime_coordinator,
                     xite,
                     "power_consumption",
                     SensorDeviceClass.POWER,
@@ -139,7 +139,7 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
                     SensorStateClass.MEASUREMENT,
                 ),
                 EbbefosDashboardSensor(
-                    dashboard_coordinator,
+                    realtime_coordinator,
                     xite,
                     "battery_soc",
                     None,
@@ -149,7 +149,7 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
                     None,
                 ),
                 EbbefosDashboardSensor(
-                    dashboard_coordinator,
+                    realtime_coordinator,
                     xite,
                     "grid_power_flow",
                     SensorDeviceClass.POWER,
@@ -158,7 +158,7 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
                     "grid_kw",
                     SensorStateClass.MEASUREMENT,
                 ),
-                EbbefosXiteEnergyModeSensor(dashboard_coordinator, xite),
+                EbbefosXiteEnergyModeSensor(realtime_coordinator, xite),
                 EbbefosEnergySensor(
                     energy_coordinator,
                     xite,
@@ -246,7 +246,7 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
             ]
         )
 
-        battery_status_response = dashboard_coordinator.data["battery_status"].get(
+        battery_status_response = realtime_coordinator.data["battery_status"].get(
             xite.xite_id
         )
         if battery_status_response:
@@ -256,7 +256,7 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
                 bid = bs.battery.battery_id
                 bat_name = bs.battery.battery_meta.external_key
                 async_add_entities(
-                    [EbbefosBatterySensor(dashboard_coordinator, xite, bid, bat_name)]
+                    [EbbefosBatterySensor(realtime_coordinator, xite, bid, bat_name)]
                 )
 
 
