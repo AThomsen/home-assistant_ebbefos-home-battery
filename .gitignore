@@ -5,6 +5,7 @@
 # Home Assistant configuration
 config/*
 !config/configuration.yaml
+/xeam
 
 ### Python ###
 # Byte-compiled / optimized / DLL files

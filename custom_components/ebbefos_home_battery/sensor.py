@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta, timezone
+from typing import cast
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
@@ -18,6 +19,13 @@ from homeassistant.helpers.update_coordinator import (
 )
 
 from .const import DOMAIN, DASHBOARD_UPDATE_INTERVAL_SEC, ENERGY_UPDATE_INTERVAL_SEC
+from .models import (
+    ENERGY_MODE_MAXIMIZE_SAVINGS,
+    ENERGY_MODE_NONE,
+    ENERGY_MODE_REMOTE_CONTROL,
+    ENERGY_MODE_SELF_RELIANCE,
+    XiteEnergyMode,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -30,14 +38,41 @@ _BATTERY_STATE_NAME = {
     5: "Sleep",
 }
 
+_ENERGY_MODE_STR = {
+    ENERGY_MODE_NONE: "none",
+    ENERGY_MODE_MAXIMIZE_SAVINGS: "maximize_savings",
+    ENERGY_MODE_SELF_RELIANCE: "self_reliance",
+    ENERGY_MODE_REMOTE_CONTROL: "remote_control",
+}
+
+_ENERGY_MODE_DISPLAY_TEXT: dict[str, str] = {
+    "none": "None",
+    "maximize_savings": "Optimize Energy Economy",
+    "self_reliance": "Solar Battery",
+    "remote_control": "Remote control",
+    "pause": "Battery paused",
+    "recalibrate": "Battery calibrating",
+}
+
+_ENERGY_MODE_ICON: dict[str, str] = {
+    "none": "mdi:flash-auto",
+    "maximize_savings": "mdi:piggy-bank",
+    "self_reliance": "mdi:solar-power-variant",
+    "remote_control": "mdi:remote",
+    "charge": "mdi:battery-arrow-up",
+    "discharge": "mdi:battery-arrow-down",
+    "pause": "mdi:pause-circle",
+    "recalibrate": "mdi:sync",
+}
+
 
 async def async_setup_entry(hass, config_entry, async_add_entities):
     """Add sensors for passed config_entry in HA."""
     ebbefosApi = hass.data[DOMAIN][config_entry.entry_id]
 
-    async def async_update_dashboard():
+    async def async_update_realtime():
         try:
-            return await ebbefosApi.get_data(get_dashboard=True, get_energy=False)
+            return await ebbefosApi.get_realtime_data()
         except ConfigEntryAuthFailed:
             raise
         except Exception as err:
@@ -45,17 +80,17 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
 
     async def async_update_energy():
         try:
-            return await ebbefosApi.get_data(get_dashboard=False, get_energy=True)
+            return await ebbefosApi.get_energy_totals()
         except ConfigEntryAuthFailed:
             raise
         except Exception as err:
             raise UpdateFailed(f"Error communicating with API: {err}")
 
-    dashboard_coordinator = DataUpdateCoordinator(
+    realtime_coordinator = DataUpdateCoordinator(
         hass,
         _LOGGER,
-        name="Ebbefos Dashboard",
-        update_method=async_update_dashboard,
+        name="Ebbefos Realtime",
+        update_method=async_update_realtime,
         update_interval=timedelta(seconds=DASHBOARD_UPDATE_INTERVAL_SEC),
     )
 
@@ -67,14 +102,14 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
         update_interval=timedelta(seconds=ENERGY_UPDATE_INTERVAL_SEC),
     )
 
-    await dashboard_coordinator.async_config_entry_first_refresh()
+    await realtime_coordinator.async_config_entry_first_refresh()
     await energy_coordinator.async_config_entry_first_refresh()
 
-    for xite in dashboard_coordinator.data["xites"].xites:
+    for xite in ebbefosApi.xites.xites:
         async_add_entities(
             [
                 EbbefosDashboardSensor(
-                    dashboard_coordinator,
+                    realtime_coordinator,
                     xite,
                     "battery_power_flow",
                     SensorDeviceClass.POWER,
@@ -84,7 +119,7 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
                     SensorStateClass.MEASUREMENT,
                 ),
                 EbbefosDashboardSensor(
-                    dashboard_coordinator,
+                    realtime_coordinator,
                     xite,
                     "pv_power",
                     SensorDeviceClass.POWER,
@@ -94,7 +129,7 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
                     SensorStateClass.MEASUREMENT,
                 ),
                 EbbefosDashboardSensor(
-                    dashboard_coordinator,
+                    realtime_coordinator,
                     xite,
                     "power_consumption",
                     SensorDeviceClass.POWER,
@@ -104,7 +139,7 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
                     SensorStateClass.MEASUREMENT,
                 ),
                 EbbefosDashboardSensor(
-                    dashboard_coordinator,
+                    realtime_coordinator,
                     xite,
                     "battery_soc",
                     None,
@@ -114,7 +149,7 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
                     None,
                 ),
                 EbbefosDashboardSensor(
-                    dashboard_coordinator,
+                    realtime_coordinator,
                     xite,
                     "grid_power_flow",
                     SensorDeviceClass.POWER,
@@ -123,6 +158,7 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
                     "grid_kw",
                     SensorStateClass.MEASUREMENT,
                 ),
+                EbbefosXiteEnergyModeSensor(realtime_coordinator, xite),
                 EbbefosEnergySensor(
                     energy_coordinator,
                     xite,
@@ -210,7 +246,7 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
             ]
         )
 
-        battery_status_response = dashboard_coordinator.data["battery_status"].get(
+        battery_status_response = realtime_coordinator.data["battery_status"].get(
             xite.xite_id
         )
         if battery_status_response:
@@ -220,7 +256,7 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
                 bid = bs.battery.battery_id
                 bat_name = bs.battery.battery_meta.external_key
                 async_add_entities(
-                    [EbbefosBatterySensor(dashboard_coordinator, xite, bid, bat_name)]
+                    [EbbefosBatterySensor(realtime_coordinator, xite, bid, bat_name)]
                 )
 
 
@@ -420,3 +456,90 @@ class EbbefosDailyCostSensor(CoordinatorEntity, SensorEntity):
         if energy is None:
             return None
         return getattr(energy, self._data_key)
+
+
+class EbbefosXiteEnergyModeSensor(CoordinatorEntity, SensorEntity):
+    """Sensor for the current energy mode / battery override command for an xite."""
+
+    _attr_has_entity_name = True
+    _attr_translation_key = "energy_mode"
+    _attr_device_class = SensorDeviceClass.ENUM
+    _attr_options = [
+        "none",
+        "maximize_savings",
+        "self_reliance",
+        "remote_control",
+        "charge",
+        "discharge",
+        "pause",
+        "recalibrate",
+    ]
+
+    def __init__(self, coordinator, xite) -> None:
+        super().__init__(coordinator)
+        self._xite_id = xite.xite_id
+        self._attr_unique_id = f"{xite.xite_id}-energy-mode"
+        self._attr_device_info = _build_device_info(xite)
+
+    def _get_mode(self) -> XiteEnergyMode | None:
+        return cast(
+            XiteEnergyMode | None,
+            self.coordinator.data.get("energy_mode", {}).get(self._xite_id),
+        )
+
+    @property
+    def native_value(self) -> str | None:
+        mode = self._get_mode()
+        if mode is None:
+            return None
+        if mode.battery and mode.battery.user_command:
+            return mode.battery.user_command.command_type or "unknown"
+        return _ENERGY_MODE_STR.get(mode.energy_mode, "unknown")
+
+    @property
+    def icon(self) -> str:
+        return _ENERGY_MODE_ICON.get(self.native_value or "", "mdi:flash")
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        mode = self._get_mode()
+        if mode is None:
+            return {}
+
+        attrib: dict = {
+            "energy_mode": _ENERGY_MODE_STR.get(mode.energy_mode, "unknown")
+        }
+
+        if mode.battery and mode.battery.user_command:
+            bat_act = mode.battery.user_command
+            value = bat_act.command_type or "unknown"
+            text = _ENERGY_MODE_DISPLAY_TEXT.get(value, value)
+            match bat_act.command_type:
+                case "discharge":
+                    if bat_act.discharge_type == "fixed":
+                        text = "Manual override - Discharging to {0}%".format(
+                            int((bat_act.down_to_soc or 0) * 100)
+                        )
+                        attrib.update(
+                            {
+                                "discharge_type": bat_act.discharge_type,
+                                "target_soc": bat_act.down_to_soc,
+                            }
+                        )
+                case "charge":
+                    if bat_act.charge_type == "fixed":
+                        text = "Manual override - Charging to {0}%".format(
+                            int((bat_act.up_to_soc or 0) * 100)
+                        )
+                        attrib.update(
+                            {
+                                "charge_type": bat_act.charge_type,
+                                "target_soc": bat_act.up_to_soc,
+                            }
+                        )
+        else:
+            value = _ENERGY_MODE_STR.get(mode.energy_mode, "unknown")
+            text = _ENERGY_MODE_DISPLAY_TEXT.get(value, value)
+
+        attrib["text"] = text
+        return attrib

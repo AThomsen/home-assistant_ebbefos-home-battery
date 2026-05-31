@@ -81,6 +81,19 @@
           "Maintenance": "Maintenance",
           "Sleep": "Sleep"
         }
+      },
+      "energy_mode": {
+        "name": "Energy mode",
+        "state": {
+          "none": "None",
+          "maximize_savings": "Optimize Energy Economy",
+          "self_reliance": "Solar Battery",
+          "remote_control": "Remote control",
+          "charge": "Manual override - Charging",
+          "discharge": "Manual override - Discharging",
+          "pause": "Battery paused",
+          "recalibrate": "Battery calibrating"
+        }
       }
     }
   }
